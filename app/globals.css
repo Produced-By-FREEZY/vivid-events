@@ -1,0 +1,85 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", "Roboto", sans-serif;
+  }
+}
+
+@layer utilities {
+  .animate-fade-in-up {
+    animation: fadeInUp 0.8s ease-out forwards;
+  }
+
+  .hover\:glow-purple:hover {
+    box-shadow: 0 0 20px rgba(140, 82, 255, 0.4);
+  }
+
+  /* Custom input focus styles */
+  input:focus,
+  textarea:focus,
+  select:focus {
+    outline: none !important;
+    border-color: #8c52ff !important;
+    box-shadow: 0 0 0 2px rgba(140, 82, 255, 0.2) !important;
+  }
+
+  /* Override default blue focus for form elements */
+  .focus\:border-\[\#8c52ff\]:focus {
+    border-color: #8c52ff !important;
+    box-shadow: 0 0 0 2px rgba(140, 82, 255, 0.2) !important;
+  }
+
+  /* Custom focus ring for buttons */
+  button:focus-visible {
+    outline: 2px solid #8c52ff;
+    outline-offset: 2px;
+  }
+
+  /* Remove default browser focus styles */
+  *:focus {
+    outline: none;
+  }
+
+  /* Custom focus for interactive elements */
+  *:focus-visible {
+    outline: 2px solid #8c52ff;
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+}
+
+@keyframes fadeInUp {
+  from {
+    opacity: 0;
+    transform: translateY(30px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #1e293b;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #475569;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #64748b;
+}
