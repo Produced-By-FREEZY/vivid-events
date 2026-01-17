@@ -1,0 +1,4 @@
+First Name,Last Name,Email,Phone,Event Date,Event Start Time,Event End Time,Estimated Guests,Service Requested,Additional Information,How They Heard About Us,Submitted,Form Type
+Sample,User,sample@example.com,604-555-1234,2025-09-15,6:00 PM,11:00 PM,150,Weddings & Celebrations,This is a sample booking entry for a wedding reception.,Google Search,2025-08-12,Booking
+Test,Contact,test@example.com,604-555-5678,,,,General Inquiry,This is a sample contact form submission asking about services.,Social Media,2025-08-12,Contact
+Demo,Booking,demo@example.com,604-555-9012,2025-10-20,9:00 AM,5:00 PM,500,Corporate Conferences,Annual company conference requiring full AV setup.,Referral,2025-08-12,Booking
