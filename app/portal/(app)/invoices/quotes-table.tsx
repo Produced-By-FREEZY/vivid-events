@@ -180,7 +180,7 @@ export function QuotesTable({ quotes }: { quotes: QuoteRecord[] }) {
                       ) : (
                         <Send className="h-3.5 w-3.5" />
                       )}
-                      {q.status === "draft" ? "Send" : "Resend"}
+                      {sentId === q.id ? "Drafted" : q.status === "draft" ? "Draft in Gmail" : "Re-draft"}
                     </button>
                   )}
                   <button

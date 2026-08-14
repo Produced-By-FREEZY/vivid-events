@@ -3,7 +3,7 @@
 import { useState } from "react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
-import { Mail, Phone, Building2, ArrowRight, Pencil, Trash2, Loader2 } from "lucide-react"
+import { Mail, Phone, Building2, ArrowRight, Pencil, Trash2, Loader2, UserPlus, Users } from "lucide-react"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -17,7 +17,7 @@ import {
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { deleteClient, updateClient } from "@/app/portal/quote-actions"
+import { addClient, deleteClient, updateClient } from "@/app/portal/quote-actions"
 
 const money = (n: number) => new Intl.NumberFormat("en-CA", { style: "currency", currency: "CAD" }).format(n)
 
@@ -41,6 +41,7 @@ export function ClientsGrid({
 }) {
   const router = useRouter()
   const [editing, setEditing] = useState<ClientRow | null>(null)
+  const [creating, setCreating] = useState(false)
   const [deleting, setDeleting] = useState<ClientRow | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -51,6 +52,25 @@ export function ClientsGrid({
     setError(null)
     setForm({ name: c.name, email: c.email, phone: c.phone ?? "", company: c.company ?? "" })
     setEditing(c)
+  }
+
+  const openCreate = () => {
+    setError(null)
+    setForm({ name: "", email: "", phone: "", company: "" })
+    setCreating(true)
+  }
+
+  const saveCreate = async () => {
+    setBusy(true)
+    setError(null)
+    const result = await addClient(form)
+    setBusy(false)
+    if (result.success) {
+      setCreating(false)
+      router.refresh()
+    } else {
+      setError(result.error ?? "Could not add the client.")
+    }
   }
 
   const saveEdit = async () => {
@@ -83,11 +103,33 @@ export function ClientsGrid({
 
   return (
     <>
-      {error && !editing && (
+      <div className="flex items-center justify-between gap-3">
+        <span className="text-sm text-slate-400">
+          {clients.length} {clients.length === 1 ? "client" : "clients"}
+        </span>
+        <button
+          onClick={openCreate}
+          className="inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold text-white shadow-lg transition-transform hover:scale-[1.02]"
+          style={{ background: "linear-gradient(to right, #8c52ff, #6b3acc)" }}
+        >
+          <UserPlus className="h-4 w-4" /> Add Client
+        </button>
+      </div>
+
+      {error && !editing && !creating && (
         <div className="rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-300">{error}</div>
       )}
 
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+      {clients.length === 0 ? (
+        <div className="rounded-2xl border border-slate-700/50 bg-slate-800/40 p-10 text-center">
+          <Users className="mx-auto h-8 w-8 text-slate-600" />
+          <p className="mt-3 text-sm text-slate-400">
+            No clients yet. Use <span className="font-medium text-slate-200">Add Client</span> to create one, or they
+            are saved automatically when you build a quote.
+          </p>
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
         {clients.map((c) => {
           const stats = statsByEmail[c.email?.toLowerCase()] ?? { count: 0, value: 0 }
           return (
@@ -155,7 +197,90 @@ export function ClientsGrid({
             </div>
           )
         })}
-      </div>
+        </div>
+      )}
+
+      {/* Create dialog */}
+      <Dialog open={creating} onOpenChange={(o) => !o && setCreating(false)}>
+        <DialogContent className="border-slate-700 bg-slate-900 text-white sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Add client</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            {error && creating && (
+              <div className="rounded-lg border border-red-500/30 bg-red-500/10 p-2.5 text-sm text-red-300">
+                {error}
+              </div>
+            )}
+            <div className="space-y-1.5">
+              <Label htmlFor="nc-name" className="text-slate-300">
+                Name
+              </Label>
+              <Input
+                id="nc-name"
+                value={form.name}
+                onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
+                placeholder="Jane Doe"
+                className="border-slate-700 bg-slate-800 text-white"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="nc-email" className="text-slate-300">
+                Email
+              </Label>
+              <Input
+                id="nc-email"
+                type="email"
+                value={form.email}
+                onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))}
+                placeholder="jane@example.com"
+                className="border-slate-700 bg-slate-800 text-white"
+              />
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <Label htmlFor="nc-phone" className="text-slate-300">
+                  Phone
+                </Label>
+                <Input
+                  id="nc-phone"
+                  value={form.phone}
+                  onChange={(e) => setForm((f) => ({ ...f, phone: e.target.value }))}
+                  className="border-slate-700 bg-slate-800 text-white"
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="nc-company" className="text-slate-300">
+                  Company
+                </Label>
+                <Input
+                  id="nc-company"
+                  value={form.company}
+                  onChange={(e) => setForm((f) => ({ ...f, company: e.target.value }))}
+                  className="border-slate-700 bg-slate-800 text-white"
+                />
+              </div>
+            </div>
+          </div>
+          <DialogFooter>
+            <button
+              onClick={() => setCreating(false)}
+              className="rounded-lg border border-slate-700 px-4 py-2 text-sm font-medium text-slate-300 transition-colors hover:bg-slate-800"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={saveCreate}
+              disabled={busy}
+              className="inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
+              style={{ background: "linear-gradient(to right, #8c52ff, #6b3acc)" }}
+            >
+              {busy && <Loader2 className="h-4 w-4 animate-spin" />}
+              Add client
+            </button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Edit dialog */}
       <Dialog open={!!editing} onOpenChange={(o) => !o && setEditing(null)}>

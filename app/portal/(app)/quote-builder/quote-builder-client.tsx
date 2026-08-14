@@ -3,7 +3,7 @@
 import { useMemo, useState } from "react"
 import { useRouter } from "next/navigation"
 import { Plus, Trash2, Send, Loader2, Check, Search, X } from "lucide-react"
-import type { ServiceItem, ItemType } from "@/app/portal/quote-actions"
+import type { ServiceItem, ItemType, ClientRecord } from "@/app/portal/quote-actions"
 import { saveQuote, sendQuote } from "@/app/portal/quote-actions"
 
 type Line = {
@@ -24,13 +24,20 @@ const newKey = () => `line-${keySeq++}`
 
 export function QuoteBuilderClient({
   catalog,
+  clients = [],
   prefill,
 }: {
   catalog: ServiceItem[]
+  clients?: ClientRecord[]
   prefill?: { name: string; email: string; event: string }
 }) {
   const router = useRouter()
 
+  // If we arrive prefilled from a client's card, preselect them in the picker.
+  const initialClientId =
+    clients.find((c) => c.email.toLowerCase() === (prefill?.email ?? "").toLowerCase())?.id ?? ""
+
+  const [selectedClientId, setSelectedClientId] = useState(initialClientId)
   const [clientName, setClientName] = useState(prefill?.name ?? "")
   const [clientEmail, setClientEmail] = useState(prefill?.email ?? "")
   const [clientPhone, setClientPhone] = useState("")
@@ -137,6 +144,25 @@ export function QuoteBuilderClient({
   const autoDepositRequired = laborTotal === 0 && depositTotal > 0
   const depositRequired = depositOverride ?? autoDepositRequired
 
+  // Pick an existing client from the dropdown → populate all contact fields.
+  const selectClient = (id: string) => {
+    setSelectedClientId(id)
+    setSavedQuote(null)
+    setSentOk(false)
+    if (!id) return
+    const c = clients.find((cl) => cl.id === id)
+    if (!c) return
+    setClientName(c.name)
+    setClientEmail(c.email)
+    setClientPhone(c.phone ?? "")
+    setCompany(c.company ?? "")
+  }
+
+  // If the owner edits a field by hand, detach from the selected client.
+  const clearSelectionOnEdit = () => {
+    if (selectedClientId) setSelectedClientId("")
+  }
+
   const buildInput = () => ({
     client_name: clientName,
     client_email: clientEmail,
@@ -209,22 +235,43 @@ export function QuoteBuilderClient({
         {/* Client + event */}
         <section className="rounded-2xl border border-slate-700/50 bg-slate-800/40 p-5">
           <h2 className="mb-4 text-sm font-semibold text-white">Client &amp; Event</h2>
+          {clients.length > 0 && (
+            <div className="mb-4">
+              <label className={labelClass}>Select an existing client</label>
+              <select
+                className={inputClass}
+                value={selectedClientId}
+                onChange={(e) => selectClient(e.target.value)}
+              >
+                <option value="">— New client (enter details below) —</option>
+                {clients.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name}
+                    {c.company ? ` · ${c.company}` : ""} — {c.email}
+                  </option>
+                ))}
+              </select>
+              <p className="mt-1 text-xs text-slate-500">
+                Choosing a client fills in their contact details automatically.
+              </p>
+            </div>
+          )}
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div>
               <label className={labelClass}>Client name *</label>
-              <input className={inputClass} value={clientName} onChange={(e) => setClientName(e.target.value)} placeholder="Jane Doe" />
+              <input className={inputClass} value={clientName} onChange={(e) => { setClientName(e.target.value); clearSelectionOnEdit() }} placeholder="Jane Doe" />
             </div>
             <div>
               <label className={labelClass}>Client email *</label>
-              <input className={inputClass} type="email" value={clientEmail} onChange={(e) => setClientEmail(e.target.value)} placeholder="jane@company.com" />
+              <input className={inputClass} type="email" value={clientEmail} onChange={(e) => { setClientEmail(e.target.value); clearSelectionOnEdit() }} placeholder="jane@company.com" />
             </div>
             <div>
               <label className={labelClass}>Phone</label>
-              <input className={inputClass} value={clientPhone} onChange={(e) => setClientPhone(e.target.value)} placeholder="(555) 123-4567" />
+              <input className={inputClass} value={clientPhone} onChange={(e) => { setClientPhone(e.target.value); clearSelectionOnEdit() }} placeholder="(555) 123-4567" />
             </div>
             <div>
               <label className={labelClass}>Company</label>
-              <input className={inputClass} value={company} onChange={(e) => setCompany(e.target.value)} placeholder="Company Inc." />
+              <input className={inputClass} value={company} onChange={(e) => { setCompany(e.target.value); clearSelectionOnEdit() }} placeholder="Company Inc." />
             </div>
             <div>
               <label className={labelClass}>Event name</label>
@@ -481,14 +528,14 @@ export function QuoteBuilderClient({
 
           {savedQuote && !sentOk && (
             <p className="rounded-lg border border-slate-700 bg-slate-900/60 p-3 text-xs text-slate-300">
-              Saved as <span className="font-semibold text-white">{savedQuote.number}</span>. Send it to the customer below.
+              Saved as <span className="font-semibold text-white">{savedQuote.number}</span>. Create the Gmail draft below.
             </p>
           )}
 
           {sentOk && (
             <div className="flex items-center gap-2 rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-3 text-sm text-emerald-300">
               <Check className="h-4 w-4 shrink-0" />
-              Quote {savedQuote?.number} sent to {clientEmail}.
+              Draft for {savedQuote?.number} saved to your Gmail — review and send it to {clientEmail} from Gmail.
             </div>
           )}
 
@@ -500,7 +547,7 @@ export function QuoteBuilderClient({
               style={{ background: "linear-gradient(to right, #8c52ff, #6b3acc)" }}
             >
               {sending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
-              {sending ? "Sending…" : "Save & Send to Customer"}
+              {sending ? "Saving draft…" : "Save Quote & Draft in Gmail"}
             </button>
             <button
               onClick={handleSave}

@@ -1,5 +1,7 @@
 import "server-only"
 import nodemailer from "nodemailer"
+import MailComposer from "nodemailer/lib/mail-composer"
+import { ImapFlow } from "imapflow"
 
 /**
  * Gmail / Google Workspace SMTP transport.
@@ -66,6 +68,126 @@ export async function sendMail({ to, subject, html, text, replyTo, attachments }
       contentType: a.contentType ?? "application/pdf",
     })),
   })
+}
+
+/**
+ * Compose the message as raw MIME and APPEND it to the Gmail "Drafts" folder
+ * over IMAP. Nothing is sent — the owner opens Gmail, reviews, and hits Send.
+ * Uses the same GMAIL_USER / GMAIL_APP_PASSWORD credentials as SMTP.
+ */
+export async function saveGmailDraft({ to, subject, html, text, replyTo, attachments }: SendArgs) {
+  const user = process.env.GMAIL_USER
+  const pass = process.env.GMAIL_APP_PASSWORD
+  if (!user || !pass) {
+    throw new Error("Email is not configured. Add GMAIL_USER and GMAIL_APP_PASSWORD.")
+  }
+
+  // Build a proper RFC822 message (headers + body + attachments).
+  const raw = await new MailComposer({
+    from: fromHeader(),
+    to,
+    subject,
+    html,
+    text,
+    replyTo: replyTo ?? user,
+    attachments: attachments?.map((a) => ({
+      filename: a.filename,
+      content: a.content instanceof Buffer ? a.content : Buffer.from(a.content),
+      contentType: a.contentType ?? "application/pdf",
+    })),
+  })
+    .compile()
+    .build()
+
+  const client = new ImapFlow({
+    host: "imap.gmail.com",
+    port: 993,
+    secure: true,
+    auth: { user, pass },
+    logger: false,
+  })
+
+  await client.connect()
+  try {
+    // Gmail exposes Drafts as a special-use mailbox; fall back to the localized name.
+    let mailbox = "[Gmail]/Drafts"
+    try {
+      const drafts = await client.getMailboxLock("[Gmail]/Drafts")
+      drafts.release()
+    } catch {
+      mailbox = "Drafts"
+    }
+    // \Draft flag so Gmail treats it as an editable draft, not a received message.
+    await client.append(mailbox, raw, ["\\Draft"], new Date())
+  } finally {
+    await client.logout().catch(() => {})
+  }
+}
+
+/* --------------------------- Owner-editable templates -------------------------- */
+
+export type QuoteEmailTemplate = {
+  subject: string
+  body: string
+  signerName: string
+}
+
+export type QuoteTemplateVars = {
+  first_name: string
+  event_name: string
+  quote_number: string
+  review_link: string
+  signer_name: string
+}
+
+/** Replace {placeholder} tokens (case-insensitive) with their values. */
+function renderTemplate(tpl: string, vars: Record<string, string>) {
+  return tpl.replace(/\{(\w+)\}/g, (_m, key: string) => {
+    const v = vars[key.toLowerCase()]
+    return v == null ? "" : v
+  })
+}
+
+/**
+ * Build the quote email from the owner's saved template (subject + body from
+ * portal_settings). The body is plain text the owner wrote; we render an HTML
+ * version that preserves their line breaks and turns the review link into a
+ * button, so it still reads like a personally typed email.
+ */
+export function renderQuoteEmail(template: QuoteEmailTemplate, vars: QuoteTemplateVars) {
+  const values: Record<string, string> = {
+    first_name: vars.first_name,
+    event_name: vars.event_name,
+    quote_number: vars.quote_number,
+    review_link: vars.review_link,
+    signer_name: vars.signer_name || template.signerName || "Vivid Events",
+  }
+
+  const subject = renderTemplate(template.subject, values).trim()
+  const text = renderTemplate(template.body, values)
+
+  // HTML: escape, keep newlines, and linkify the review URL if present.
+  const htmlBody = escapeHtml(text)
+    .replace(
+      new RegExp(escapeRegExp(values.review_link), "g"),
+      `<a href="${values.review_link}" style="color:#8c52ff;font-weight:600;text-decoration:underline;">${values.review_link}</a>`,
+    )
+    .replace(/\n/g, "<br/>")
+
+  const html = `<!doctype html>
+<html>
+  <body style="margin:0;padding:0;background:#ffffff;">
+    <div style="max-width:600px;margin:0 auto;padding:20px 4px;color:#1f2937;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:15px;line-height:1.6;">
+      ${htmlBody}
+    </div>
+  </body>
+</html>`
+
+  return { subject, html, text }
+}
+
+function escapeRegExp(s: string) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
 }
 
 /* ---------------------------------- Templates --------------------------------- */

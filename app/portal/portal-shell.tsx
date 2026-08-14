@@ -28,6 +28,7 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/sheet"
 import { signOut } from "@/app/portal/actions"
+import { LogoLedBars } from "./logo-led-bars"
 
 const navItems = [
   { label: "Dashboard", href: "/portal/dashboard", icon: LayoutDashboard },
@@ -106,8 +107,11 @@ export function PortalShell({ children }: { children: React.ReactNode }) {
           collapsed ? "w-16" : "w-64"
         } sticky top-0 hidden h-screen shrink-0 flex-col border-r border-slate-700/50 bg-slate-900/60 transition-[width] duration-300 md:flex`}
       >
-        <div className="flex h-16 items-center justify-center border-b-2 border-[#8c52ff]/40 bg-black px-3">
-          {collapsed ? <Logo compact /> : <Logo />}
+        <div className="relative flex h-16 items-center justify-center overflow-hidden border-b-2 border-[#8c52ff]/40 bg-black px-3">
+          <LogoLedBars />
+          {/* Fade so the logo stays crisp over the animated bars */}
+          <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-black/70 via-black/30 to-transparent" />
+          <div className="relative z-10">{collapsed ? <Logo compact /> : <Logo />}</div>
         </div>
         <NavLinks activeHref={activeHref} collapsed={collapsed} />
         <div className="border-t border-slate-700/50 p-3">
@@ -135,8 +139,12 @@ export function PortalShell({ children }: { children: React.ReactNode }) {
                 className="w-72 border-slate-700/50 bg-slate-900 p-0 text-white [&>button]:text-slate-400"
               >
                 <SheetTitle className="sr-only">Navigation</SheetTitle>
-                <div className="flex h-16 items-center justify-center border-b-2 border-[#8c52ff]/40 bg-black px-3">
-                  <Logo />
+                <div className="relative flex h-16 items-center justify-center overflow-hidden border-b-2 border-[#8c52ff]/40 bg-black px-3">
+                  <LogoLedBars />
+                  <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-black/70 via-black/30 to-transparent" />
+                  <div className="relative z-10">
+                    <Logo />
+                  </div>
                 </div>
                 <NavLinks activeHref={activeHref} onNavigate={() => setMobileOpen(false)} />
               </SheetContent>
