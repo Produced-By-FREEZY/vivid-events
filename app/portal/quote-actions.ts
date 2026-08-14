@@ -1,9 +1,13 @@
 "use server"
 
 import { revalidatePath } from "next/cache"
+import { headers } from "next/headers"
 import { createClient as createServerClient } from "@/lib/supabase/server"
 import { createAdminClient } from "@/lib/supabase/admin"
-import { isEmailConfigured, quoteEmail, sendMail } from "@/lib/email"
+import { isEmailConfigured, personalQuoteEmail, sendMail } from "@/lib/email"
+import { generateQuotePdf } from "@/lib/quote-pdf"
+
+export type ItemType = "equipment" | "labor" | "service"
 
 export type ServiceItem = {
   id: string
@@ -12,6 +16,8 @@ export type ServiceItem = {
   description: string | null
   unit: string
   unit_price: number
+  item_type: ItemType
+  deposit_amount: number
   active: boolean
   sort_order: number
 }
@@ -22,6 +28,8 @@ export type QuoteLineInput = {
   description: string | null
   unit_price: number
   quantity: number
+  item_type?: ItemType
+  deposit_amount?: number
 }
 
 export type QuoteInput = {
@@ -34,6 +42,7 @@ export type QuoteInput = {
   notes?: string | null
   valid_until?: string | null
   tax_rate: number
+  deposit_required?: boolean | null
   items: QuoteLineInput[]
 }
 
@@ -49,6 +58,15 @@ export type QuoteRecord = {
   tax_rate: number
   tax_amount: number
   total: number
+  labor_total: number
+  deposit_total: number
+  deposit_required: boolean
+  amount_paid: number
+  public_token: string | null
+  invoice_number: string | null
+  stripe_invoice_url: string | null
+  approved_at: string | null
+  paid_at: string | null
   notes: string | null
   valid_until: string | null
   sent_at: string | null
@@ -106,10 +124,14 @@ export type ServiceItemInput = {
   description?: string | null
   unit: string
   unit_price: number
+  item_type?: ItemType
+  deposit_amount?: number
   active?: boolean
 }
 
 type CatalogResult = { success: boolean; error?: string }
+
+const ITEM_TYPES: ItemType[] = ["equipment", "labor", "service"]
 
 function validateItem(input: ServiceItemInput): string | null {
   if (!input.category?.trim()) return "Category is required."
@@ -117,6 +139,9 @@ function validateItem(input: ServiceItemInput): string | null {
   if (!input.unit?.trim()) return "Unit is required."
   const price = Number(input.unit_price)
   if (!Number.isFinite(price) || price < 0) return "Price must be zero or greater."
+  const deposit = Number(input.deposit_amount ?? 0)
+  if (!Number.isFinite(deposit) || deposit < 0) return "Deposit must be zero or greater."
+  if (input.item_type && !ITEM_TYPES.includes(input.item_type)) return "Invalid item type."
   return null
 }
 
@@ -128,12 +153,16 @@ export async function saveServiceItem(input: ServiceItemInput): Promise<CatalogR
   const validationError = validateItem(input)
   if (validationError) return { success: false, error: validationError }
 
+  const itemType: ItemType = input.item_type && ITEM_TYPES.includes(input.item_type) ? input.item_type : "equipment"
   const payload = {
     category: input.category.trim(),
     name: input.name.trim(),
     description: input.description?.trim() || null,
     unit: input.unit.trim(),
     unit_price: Math.round(Number(input.unit_price) * 100) / 100,
+    item_type: itemType,
+    // Only equipment can carry a security deposit.
+    deposit_amount: itemType === "equipment" ? Math.round(Number(input.deposit_amount ?? 0) * 100) / 100 : 0,
     active: input.active ?? true,
   }
 
@@ -200,18 +229,28 @@ function computeTotals(items: QuoteLineInput[], taxRate: number) {
     .map((it) => {
       const quantity = Math.max(0, Number(it.quantity) || 0)
       const unitPrice = Math.max(0, Number(it.unit_price) || 0)
+      const itemType: ItemType = ITEM_TYPES.includes(it.item_type as ItemType)
+        ? (it.item_type as ItemType)
+        : "equipment"
+      const depositEach = itemType === "equipment" ? Math.max(0, Number(it.deposit_amount) || 0) : 0
       return {
         ...it,
+        item_type: itemType,
         quantity,
         unit_price: unitPrice,
+        deposit_amount: depositEach,
         line_total: Math.round(quantity * unitPrice * 100) / 100,
+        deposit_line_total: Math.round(quantity * depositEach * 100) / 100,
       }
     })
   const subtotal = Math.round(cleanItems.reduce((sum, it) => sum + it.line_total, 0) * 100) / 100
+  const laborTotal =
+    Math.round(cleanItems.filter((it) => it.item_type === "labor").reduce((s, it) => s + it.line_total, 0) * 100) / 100
+  const depositTotal = Math.round(cleanItems.reduce((sum, it) => sum + it.deposit_line_total, 0) * 100) / 100
   const rate = Number.isFinite(taxRate) && taxRate >= 0 && taxRate <= 1 ? taxRate : TAX_RATE
   const taxAmount = Math.round(subtotal * rate * 100) / 100
   const total = Math.round((subtotal + taxAmount) * 100) / 100
-  return { cleanItems, subtotal, rate, taxAmount, total }
+  return { cleanItems, subtotal, laborTotal, depositTotal, rate, taxAmount, total }
 }
 
 type SaveResult = { success: boolean; error?: string; quoteId?: string; quoteNumber?: string }
@@ -231,10 +270,18 @@ export async function saveQuote(input: QuoteInput): Promise<SaveResult> {
     return { success: false, error: "A valid client email is required." }
   }
 
-  const { cleanItems, subtotal, rate, taxAmount, total } = computeTotals(input.items, input.tax_rate)
+  const { cleanItems, subtotal, laborTotal, depositTotal, rate, taxAmount, total } = computeTotals(
+    input.items,
+    input.tax_rate,
+  )
   if (cleanItems.length === 0) {
     return { success: false, error: "Add at least one line item to the quote." }
   }
+
+  // Equipment-only rentals (no on-site labour) require a refundable security
+  // deposit to protect the gear. The owner can override this per quote.
+  const depositRequired = input.deposit_required ?? (laborTotal === 0 && depositTotal > 0)
+  const publicToken = crypto.randomUUID().replace(/-/g, "")
 
   const { supabase } = session
 
@@ -288,6 +335,10 @@ export async function saveQuote(input: QuoteInput): Promise<SaveResult> {
       tax_rate: rate,
       tax_amount: taxAmount,
       total,
+      labor_total: laborTotal,
+      deposit_total: depositTotal,
+      deposit_required: depositRequired,
+      public_token: publicToken,
       notes: input.notes?.trim() || null,
       valid_until: input.valid_until || null,
     })
@@ -307,6 +358,8 @@ export async function saveQuote(input: QuoteInput): Promise<SaveResult> {
     unit_price: it.unit_price,
     quantity: it.quantity,
     line_total: it.line_total,
+    item_type: it.item_type,
+    deposit_amount: it.deposit_amount,
     sort_order: i,
   }))
   const { error: itemsError } = await supabase.from("quote_items").insert(rows)
@@ -323,7 +376,22 @@ export async function saveQuote(input: QuoteInput): Promise<SaveResult> {
   return { success: true, quoteId: quote.id, quoteNumber }
 }
 
-/** Email a saved quote to the customer from the business Gmail. */
+/** Resolve the public origin so review links in the email point at the live app. */
+async function getBaseUrl(): Promise<string> {
+  if (process.env.NEXT_PUBLIC_APP_URL) return process.env.NEXT_PUBLIC_APP_URL.replace(/\/$/, "")
+  const h = await headers()
+  const host = h.get("x-forwarded-host") ?? h.get("host")
+  const proto = h.get("x-forwarded-proto") ?? "https"
+  if (host) return `${proto}://${host}`
+  return "http://localhost:3000"
+}
+
+const firstNameOf = (name: string) => name.trim().split(/\s+/)[0] || name
+
+/**
+ * Email a saved quote to the customer: a person-typed note with the branded
+ * quotation PDF attached and a secure link to review, approve and pay online.
+ */
 export async function sendQuote(quoteId: string): Promise<{ success: boolean; error?: string }> {
   const session = await requireSession()
   if (!session) return { success: false, error: "You are not signed in." }
@@ -337,16 +405,33 @@ export async function sendQuote(quoteId: string): Promise<{ success: boolean; er
     return { success: false, error: "Quote not found." }
   }
 
+  // Ensure a public token exists (older quotes may predate this column).
+  let publicToken: string = quote.public_token
+  if (!publicToken) {
+    publicToken = crypto.randomUUID().replace(/-/g, "")
+    await supabase.from("quotes").update({ public_token: publicToken }).eq("id", quoteId)
+  }
+
   const { data: items } = await supabase
     .from("quote_items")
     .select("*")
     .eq("quote_id", quoteId)
     .order("sort_order", { ascending: true })
 
+  const baseUrl = await getBaseUrl()
+  const reviewUrl = `${baseUrl}/quote/${publicToken}`
+  const depositTotal = Number(quote.deposit_total ?? 0)
+  const depositRequired = Boolean(quote.deposit_required)
+  const total = Number(quote.total)
+  const amountDue = depositRequired ? Math.round((total + depositTotal) * 100) / 100 : total
+
   try {
-    const { subject, html, text } = quoteEmail({
-      quoteNumber: quote.quote_number,
+    const pdf = await generateQuotePdf({
+      kind: "quote",
+      number: quote.quote_number,
+      issuedDate: new Date(quote.created_at ?? Date.now()).toLocaleDateString("en-CA"),
       clientName: quote.client_name,
+      clientEmail: quote.client_email,
       eventName: quote.event_name,
       eventDate: quote.event_date,
       items: (items ?? []).map((it) => ({
@@ -355,21 +440,45 @@ export async function sendQuote(quoteId: string): Promise<{ success: boolean; er
         quantity: Number(it.quantity),
         unitPrice: Number(it.unit_price),
         lineTotal: Number(it.line_total),
+        itemType: it.item_type,
       })),
       subtotal: Number(quote.subtotal),
       taxRate: Number(quote.tax_rate),
       taxAmount: Number(quote.tax_amount),
-      total: Number(quote.total),
+      total,
+      depositTotal,
+      depositRequired,
+      amountDue,
       notes: quote.notes,
       validUntil: quote.valid_until,
     })
-    await sendMail({ to: quote.client_email, subject, html, text })
+
+    const { subject, html, text } = personalQuoteEmail({
+      quoteNumber: quote.quote_number,
+      clientFirstName: firstNameOf(quote.client_name),
+      eventName: quote.event_name,
+      eventDate: quote.event_date,
+      total,
+      reviewUrl,
+    })
+    await sendMail({
+      to: quote.client_email,
+      subject,
+      html,
+      text,
+      attachments: [{ filename: `Quotation-${quote.quote_number}.pdf`, content: pdf }],
+    })
   } catch (e) {
     console.error("[v0] sendQuote email failed:", e instanceof Error ? e.message : e)
     return { success: false, error: "Could not send the quote email. Please try again." }
   }
 
-  await supabase.from("quotes").update({ status: "sent", sent_at: new Date().toISOString() }).eq("id", quoteId)
+  // Don't downgrade an already-approved/paid quote back to "sent".
+  const keepStatus = ["approved", "paid", "invoiced"].includes(quote.status)
+  await supabase
+    .from("quotes")
+    .update({ status: keepStatus ? quote.status : "sent", sent_at: new Date().toISOString() })
+    .eq("id", quoteId)
 
   revalidatePath("/portal/invoices")
   revalidatePath("/portal/dashboard")

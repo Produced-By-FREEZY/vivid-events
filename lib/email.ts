@@ -36,15 +36,22 @@ function fromHeader() {
   return `"${FROM_NAME}" <${process.env.GMAIL_USER}>`
 }
 
+type Attachment = {
+  filename: string
+  content: Buffer | Uint8Array
+  contentType?: string
+}
+
 type SendArgs = {
   to: string
   subject: string
   html: string
   text: string
   replyTo?: string
+  attachments?: Attachment[]
 }
 
-export async function sendMail({ to, subject, html, text, replyTo }: SendArgs) {
+export async function sendMail({ to, subject, html, text, replyTo, attachments }: SendArgs) {
   const transport = getTransport()
   await transport.sendMail({
     from: fromHeader(),
@@ -53,6 +60,11 @@ export async function sendMail({ to, subject, html, text, replyTo }: SendArgs) {
     html,
     text,
     replyTo: replyTo ?? process.env.GMAIL_USER,
+    attachments: attachments?.map((a) => ({
+      filename: a.filename,
+      content: a.content instanceof Buffer ? a.content : Buffer.from(a.content),
+      contentType: a.contentType ?? "application/pdf",
+    })),
   })
 }
 
@@ -174,4 +186,131 @@ function escapeHtml(s: string) {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;")
+}
+
+/**
+ * The name the quote/invoice emails are signed with. Set QUOTE_SIGNER_NAME to
+ * the real person who should appear to have written the email; falls back to a
+ * friendly first name so it never reads like an automated system.
+ */
+function signerName() {
+  return process.env.QUOTE_SIGNER_NAME?.trim() || "Marcus"
+}
+
+/**
+ * A deliberately plain, person-typed email. No big HTML quote table — it reads
+ * like a human opened the request, wrote a short note, attached the quotation
+ * PDF, and hit send. The formal numbers live in the attachment + the link.
+ */
+type PersonalQuoteArgs = {
+  quoteNumber: string
+  clientFirstName: string
+  eventName?: string | null
+  eventDate?: string | null
+  total: number
+  reviewUrl: string
+}
+
+export function personalQuoteEmail(q: PersonalQuoteArgs) {
+  const first = q.clientFirstName || "there"
+  const eventBit = q.eventName ? ` for ${q.eventName}` : " for your event"
+  const dateBit = q.eventDate ? ` on ${q.eventDate}` : ""
+
+  // Plain-text body — this is what most clients will actually see.
+  const text = `Hi ${first},
+
+Thanks so much for reaching out — it was great learning about what you have planned${eventBit ? eventBit : ""}${dateBit}.
+
+I've put together a quotation covering everything we discussed and attached it to this email as a PDF (quote ${q.quoteNumber}). Please take a look when you get a chance.
+
+Whenever you're ready, you can review, approve and (if you'd like) pay your deposit securely here:
+${q.reviewUrl}
+
+If anything looks off or you'd like to tweak the package, just reply to this email — happy to adjust it. Looking forward to being part of the day.
+
+Warm regards,
+${signerName()}
+Vivid Events`
+
+  // Light HTML that mimics a normal typed email (system font, no card/branding blocks).
+  const paragraphs = [
+    `Hi ${escapeHtml(first)},`,
+    `Thanks so much for reaching out &mdash; it was great learning about what you have planned${
+      q.eventName ? " for " + escapeHtml(q.eventName) : " for your event"
+    }${q.eventDate ? " on " + escapeHtml(q.eventDate) : ""}.`,
+    `I&rsquo;ve put together a quotation covering everything we discussed and attached it to this email as a PDF (quote ${escapeHtml(
+      q.quoteNumber,
+    )}). Please take a look when you get a chance.`,
+    `Whenever you&rsquo;re ready, you can review, approve and (if you&rsquo;d like) pay your deposit securely here:`,
+  ]
+    .map((p) => `<p style="margin:0 0 14px;">${p}</p>`)
+    .join("")
+
+  const html = `<!doctype html>
+<html>
+  <body style="margin:0;padding:0;background:#ffffff;">
+    <div style="max-width:560px;margin:0 auto;padding:20px 4px;color:#1f2937;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:15px;line-height:1.6;">
+      ${paragraphs}
+      <p style="margin:0 0 18px;">
+        <a href="${q.reviewUrl}" style="color:#8c52ff;font-weight:600;text-decoration:underline;">Review &amp; approve quote ${escapeHtml(
+          q.quoteNumber,
+        )}</a>
+      </p>
+      <p style="margin:0 0 14px;">If anything looks off or you&rsquo;d like to tweak the package, just reply to this email &mdash; happy to adjust it. Looking forward to being part of the day.</p>
+      <p style="margin:0;">Warm regards,<br/>${escapeHtml(signerName())}<br/><span style="color:#6b7280;">Vivid Events</span></p>
+    </div>
+  </body>
+</html>`
+
+  return { subject: `Your quotation for ${q.eventName || "your event"} (${q.quoteNumber})`, html, text }
+}
+
+/** Sent after a customer pays — reads like a person confirming, with the invoice PDF attached. */
+type InvoiceEmailArgs = {
+  invoiceNumber: string
+  clientFirstName: string
+  eventName?: string | null
+  amountPaid: number
+  receiptUrl?: string | null
+}
+
+export function invoicePaidEmail(q: InvoiceEmailArgs) {
+  const first = q.clientFirstName || "there"
+  const receiptLine = q.receiptUrl ? `\nYour card receipt is here: ${q.receiptUrl}` : ""
+
+  const text = `Hi ${first},
+
+Just a quick note to say your payment came through — thank you! I've attached your paid invoice (${q.invoiceNumber}) for your records.${receiptLine}
+
+Your booking${q.eventName ? " for " + q.eventName : ""} is now confirmed. I'll be in touch closer to the date to finalise timings, but in the meantime feel free to reply here with any questions at all.
+
+Thanks again for choosing us — can't wait for the event.
+
+All the best,
+${signerName()}
+Vivid Events`
+
+  const html = `<!doctype html>
+<html>
+  <body style="margin:0;padding:0;background:#ffffff;">
+    <div style="max-width:560px;margin:0 auto;padding:20px 4px;color:#1f2937;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:15px;line-height:1.6;">
+      <p style="margin:0 0 14px;">Hi ${escapeHtml(first)},</p>
+      <p style="margin:0 0 14px;">Just a quick note to say your payment came through &mdash; thank you! I&rsquo;ve attached your paid invoice (${escapeHtml(
+        q.invoiceNumber,
+      )}) for your records.</p>
+      ${
+        q.receiptUrl
+          ? `<p style="margin:0 0 14px;"><a href="${q.receiptUrl}" style="color:#8c52ff;font-weight:600;">View your card receipt</a></p>`
+          : ""
+      }
+      <p style="margin:0 0 14px;">Your booking${
+        q.eventName ? " for " + escapeHtml(q.eventName) : ""
+      } is now confirmed. I&rsquo;ll be in touch closer to the date to finalise timings, but in the meantime feel free to reply here with any questions at all.</p>
+      <p style="margin:0 0 14px;">Thanks again for choosing us &mdash; can&rsquo;t wait for the event.</p>
+      <p style="margin:0;">All the best,<br/>${escapeHtml(signerName())}<br/><span style="color:#6b7280;">Vivid Events</span></p>
+    </div>
+  </body>
+</html>`
+
+  return { subject: `Payment received — invoice ${q.invoiceNumber}`, html, text }
 }

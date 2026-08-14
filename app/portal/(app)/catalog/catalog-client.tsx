@@ -3,10 +3,16 @@
 import { useMemo, useState, useTransition } from "react"
 import { useRouter } from "next/navigation"
 import { Plus, Pencil, Trash2, Search, X, Package, Check } from "lucide-react"
-import type { ServiceItem } from "@/app/portal/quote-actions"
+import type { ServiceItem, ItemType } from "@/app/portal/quote-actions"
 import { saveServiceItem, toggleServiceItem, deleteServiceItem } from "@/app/portal/quote-actions"
 
 const UNIT_OPTIONS = ["each", "pair", "package", "event", "day", "hour", "run", "section", "panel", "trip"]
+
+const ITEM_TYPES: { value: ItemType; label: string; hint: string }[] = [
+  { value: "equipment", label: "Equipment", hint: "Physical gear that can be rented (may need a deposit)" },
+  { value: "labor", label: "Labour", hint: "On-site staff billed by the hour" },
+  { value: "service", label: "Service", hint: "Flat fee — delivery, setup, design, etc." },
+]
 
 const money = (n: number) =>
   new Intl.NumberFormat("en-CA", { style: "currency", currency: "CAD" }).format(n)
@@ -18,11 +24,22 @@ type Draft = {
   description: string
   unit: string
   unit_price: string
+  item_type: ItemType
+  deposit_amount: string
   active: boolean
 }
 
 function emptyDraft(category = ""): Draft {
-  return { category, name: "", description: "", unit: "each", unit_price: "", active: true }
+  return {
+    category,
+    name: "",
+    description: "",
+    unit: "each",
+    unit_price: "",
+    item_type: "equipment",
+    deposit_amount: "",
+    active: true,
+  }
 }
 
 export function CatalogClient({ items }: { items: ServiceItem[] }) {
@@ -75,6 +92,8 @@ export function CatalogClient({ items }: { items: ServiceItem[] }) {
       description: it.description ?? "",
       unit: it.unit,
       unit_price: String(it.unit_price),
+      item_type: it.item_type ?? "equipment",
+      deposit_amount: it.deposit_amount ? String(it.deposit_amount) : "",
       active: it.active,
     })
   }
@@ -90,6 +109,8 @@ export function CatalogClient({ items }: { items: ServiceItem[] }) {
         description: editing.description,
         unit: editing.unit,
         unit_price: Number(editing.unit_price),
+        item_type: editing.item_type,
+        deposit_amount: Number(editing.deposit_amount || 0),
         active: editing.active,
       })
       if (!res.success) {
@@ -185,8 +206,18 @@ export function CatalogClient({ items }: { items: ServiceItem[] }) {
                     {catItems.map((it) => (
                       <tr key={it.id} className={`transition-colors hover:bg-slate-800/40 ${!it.active ? "opacity-50" : ""}`}>
                         <td className="px-4 py-3">
-                          <div className="flex items-center gap-2 font-medium text-white">
+                          <div className="flex flex-wrap items-center gap-2 font-medium text-white">
                             {it.name}
+                            {it.item_type === "labor" && (
+                              <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-amber-300">
+                                Labour
+                              </span>
+                            )}
+                            {it.item_type === "service" && (
+                              <span className="rounded bg-sky-500/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-sky-300">
+                                Service
+                              </span>
+                            )}
                             {!it.active && (
                               <span className="rounded bg-slate-700 px-1.5 py-0.5 text-[10px] uppercase text-slate-300">
                                 Hidden
@@ -198,8 +229,16 @@ export function CatalogClient({ items }: { items: ServiceItem[] }) {
                           )}
                         </td>
                         <td className="whitespace-nowrap px-4 py-3 text-right">
-                          <div className="font-semibold text-white">{money(Number(it.unit_price))}</div>
+                          <div className="font-semibold text-white">
+                            {money(Number(it.unit_price))}
+                            {it.item_type === "labor" && <span className="text-xs font-normal text-amber-300">/hr</span>}
+                          </div>
                           <div className="text-xs text-slate-500">per {it.unit}</div>
+                          {it.item_type === "equipment" && Number(it.deposit_amount) > 0 && (
+                            <div className="mt-0.5 text-[11px] text-slate-400">
+                              {money(Number(it.deposit_amount))} deposit
+                            </div>
+                          )}
                         </td>
                         <td className="whitespace-nowrap px-2 py-3 text-right">
                           <div className="flex items-center justify-end gap-1">
@@ -276,6 +315,36 @@ export function CatalogClient({ items }: { items: ServiceItem[] }) {
                   className={inputCls}
                 />
               </div>
+              <div>
+                <label className="mb-1 block text-xs font-medium text-slate-400">Item type</label>
+                <div className="grid grid-cols-3 gap-2">
+                  {ITEM_TYPES.map((t) => (
+                    <button
+                      key={t.value}
+                      type="button"
+                      onClick={() =>
+                        setEditing({
+                          ...editing,
+                          item_type: t.value,
+                          // Labour is almost always billed hourly; nudge the unit.
+                          unit: t.value === "labor" ? "hour" : editing.unit,
+                          deposit_amount: t.value === "equipment" ? editing.deposit_amount : "",
+                        })
+                      }
+                      className={`rounded-lg border px-3 py-2 text-xs font-medium transition-colors ${
+                        editing.item_type === t.value
+                          ? "border-[#8c52ff] bg-[#8c52ff]/15 text-white"
+                          : "border-slate-700 bg-slate-900/60 text-slate-300 hover:border-slate-600"
+                      }`}
+                    >
+                      {t.label}
+                    </button>
+                  ))}
+                </div>
+                <p className="mt-1.5 text-[11px] text-slate-500">
+                  {ITEM_TYPES.find((t) => t.value === editing.item_type)?.hint}
+                </p>
+              </div>
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="mb-1 block text-xs font-medium text-slate-400">Category</label>
@@ -311,7 +380,9 @@ export function CatalogClient({ items }: { items: ServiceItem[] }) {
               </div>
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <label className="mb-1 block text-xs font-medium text-slate-400">Price (CAD)</label>
+                  <label className="mb-1 block text-xs font-medium text-slate-400">
+                    {editing.item_type === "labor" ? "Hourly rate (CAD)" : "Price (CAD)"}
+                  </label>
                   <input
                     value={editing.unit_price}
                     onChange={(e) => setEditing({ ...editing, unit_price: e.target.value })}
@@ -320,21 +391,32 @@ export function CatalogClient({ items }: { items: ServiceItem[] }) {
                     className={inputCls}
                   />
                 </div>
-                <div className="flex items-end">
-                  <label className="flex cursor-pointer items-center gap-2 text-sm text-slate-300">
-                    <button
-                      type="button"
-                      onClick={() => setEditing({ ...editing, active: !editing.active })}
-                      className={`flex h-5 w-5 items-center justify-center rounded border transition-colors ${
-                        editing.active ? "border-[#8c52ff] bg-[#8c52ff]" : "border-slate-600 bg-transparent"
-                      }`}
-                    >
-                      {editing.active && <Check className="h-3.5 w-3.5 text-white" />}
-                    </button>
-                    Show in quote builder
-                  </label>
-                </div>
+                {editing.item_type === "equipment" && (
+                  <div>
+                    <label className="mb-1 block text-xs font-medium text-slate-400">Security deposit (CAD)</label>
+                    <input
+                      value={editing.deposit_amount}
+                      onChange={(e) => setEditing({ ...editing, deposit_amount: e.target.value })}
+                      inputMode="decimal"
+                      placeholder="0.00"
+                      className={inputCls}
+                    />
+                    <p className="mt-1 text-[11px] text-slate-500">Refundable hold per unit for rental-only jobs.</p>
+                  </div>
+                )}
               </div>
+              <label className="flex cursor-pointer items-center gap-2 text-sm text-slate-300">
+                <button
+                  type="button"
+                  onClick={() => setEditing({ ...editing, active: !editing.active })}
+                  className={`flex h-5 w-5 items-center justify-center rounded border transition-colors ${
+                    editing.active ? "border-[#8c52ff] bg-[#8c52ff]" : "border-slate-600 bg-transparent"
+                  }`}
+                >
+                  {editing.active && <Check className="h-3.5 w-3.5 text-white" />}
+                </button>
+                Show in quote builder
+              </label>
             </div>
 
             <div className="mt-6 flex justify-end gap-3">
