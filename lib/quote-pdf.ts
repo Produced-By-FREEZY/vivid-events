@@ -1,5 +1,7 @@
 import "server-only"
-import { PDFDocument, StandardFonts, rgb, type PDFFont } from "pdf-lib"
+import { readFile } from "node:fs/promises"
+import path from "node:path"
+import { PDFDocument, StandardFonts, rgb, type PDFFont, type PDFImage } from "pdf-lib"
 
 /* Brand palette — mirrors the site's dark navy + #8c52ff purple */
 const BRAND = rgb(0.549, 0.322, 1) // #8c52ff
@@ -64,6 +66,15 @@ export async function generateQuotePdf(input: QuotePdfInput): Promise<Uint8Array
   const font = await doc.embedFont(StandardFonts.Helvetica)
   const bold = await doc.embedFont(StandardFonts.HelveticaBold)
 
+  // Brand logo for the header band. Falls back to a drawn "V" mark if unavailable.
+  let logo: PDFImage | null = null
+  try {
+    const logoBytes = await readFile(path.join(process.cwd(), "public", "images", "vivid-events-logo.png"))
+    logo = await doc.embedPng(logoBytes)
+  } catch {
+    logo = null
+  }
+
   const businessName = input.businessName ?? "Vivid Events"
   const businessSite = input.businessSite ?? "vividevents.ca"
   const businessEmail = input.businessEmail ?? ""
@@ -107,19 +118,24 @@ export async function generateQuotePdf(input: QuotePdfInput): Promise<Uint8Array
     // Purple accent rule at the base of the band
     page.drawRectangle({ x: 0, y: PAGE_H - HEADER_H, width: PAGE_W, height: 3, color: BRAND })
 
-    // Logo mark — rounded purple square with a subtle deeper edge
-    const logoX = MARGIN
-    const logoY = PAGE_H - 74
-    page.drawRectangle({ x: logoX, y: logoY, width: 40, height: 40, color: BRAND_DK })
-    page.drawRectangle({ x: logoX, y: logoY + 3, width: 40, height: 37, color: BRAND })
-    text("V", logoX + 12.5, logoY + 11, { size: 22, font: bold, color: WHITE })
-
-    // Business name + tagline
-    text(businessName, logoX + 54, PAGE_H - 52, { size: 18, font: bold, color: WHITE })
-    text("Audio  ·  Video  ·  Lighting  ·  Event Production", logoX + 54, PAGE_H - 70, {
-      size: 8.5,
-      color: rgb(0.62, 0.66, 0.75),
-    })
+    if (logo) {
+      // Real brand logo (already includes the wordmark), vertically centered in the band
+      const logoH = 56
+      const logoW = (logo.width / logo.height) * logoH
+      page.drawImage(logo, { x: MARGIN, y: PAGE_H - HEADER_H / 2 - logoH / 2, width: logoW, height: logoH })
+    } else {
+      // Fallback: drawn purple "V" mark + wordmark
+      const logoX = MARGIN
+      const logoY = PAGE_H - 74
+      page.drawRectangle({ x: logoX, y: logoY, width: 40, height: 40, color: BRAND_DK })
+      page.drawRectangle({ x: logoX, y: logoY + 3, width: 40, height: 37, color: BRAND })
+      text("V", logoX + 12.5, logoY + 11, { size: 22, font: bold, color: WHITE })
+      text(businessName, logoX + 54, PAGE_H - 52, { size: 18, font: bold, color: WHITE })
+      text("Audio  ·  Video  ·  Lighting  ·  Event Production", logoX + 54, PAGE_H - 70, {
+        size: 8.5,
+        color: rgb(0.62, 0.66, 0.75),
+      })
+    }
 
     // Document title block (right)
     const title = input.kind === "invoice" ? "INVOICE" : "QUOTATION"

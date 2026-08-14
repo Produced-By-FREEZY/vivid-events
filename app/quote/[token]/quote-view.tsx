@@ -146,17 +146,11 @@ export function QuoteView({
           {/* Letterhead */}
           <div className="flex items-start justify-between gap-4 border-b border-slate-200 bg-gradient-to-br from-slate-900 to-slate-800 p-6 md:p-8">
             <div className="flex items-center gap-3">
-              <div
-                className="flex h-11 w-11 items-center justify-center rounded-lg text-xl font-bold text-white"
-                style={{ backgroundColor: "#8c52ff" }}
-                aria-hidden
-              >
-                V
-              </div>
-              <div>
-                <p className="text-lg font-bold text-white">Vivid Events</p>
-                <p className="text-xs text-slate-300">Audio · Video · Lighting · Production</p>
-              </div>
+              <img
+                src="/images/vivid-events-logo.png"
+                alt="Vivid Events — Audio, Video, Lighting, Production"
+                className="h-12 w-auto md:h-14"
+              />
             </div>
             <div className="text-right">
               <p className="text-xs uppercase tracking-wide text-slate-400">
