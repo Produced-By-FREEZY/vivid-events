@@ -3,7 +3,7 @@
 import { useMemo, useState } from "react"
 import { useRouter } from "next/navigation"
 import { Plus, Trash2, Send, Loader2, Check, Search, X } from "lucide-react"
-import type { ServiceItem } from "@/app/portal/quote-actions"
+import type { ServiceItem, ItemType } from "@/app/portal/quote-actions"
 import { saveQuote, sendQuote } from "@/app/portal/quote-actions"
 
 type Line = {
@@ -13,6 +13,8 @@ type Line = {
   description: string | null
   unit_price: number
   quantity: number
+  item_type: ItemType
+  deposit_amount: number
 }
 
 const money = (n: number) => new Intl.NumberFormat("en-CA", { style: "currency", currency: "CAD" }).format(n)
@@ -78,6 +80,8 @@ export function QuoteBuilderClient({
           description: item.description,
           unit_price: Number(item.unit_price),
           quantity: 1,
+          item_type: item.item_type ?? "equipment",
+          deposit_amount: Number(item.deposit_amount ?? 0),
         },
       ]
     })
@@ -87,7 +91,16 @@ export function QuoteBuilderClient({
     setSavedQuote(null)
     setLines((prev) => [
       ...prev,
-      { key: newKey(), service_item_id: null, name: "", description: null, unit_price: 0, quantity: 1 },
+      {
+        key: newKey(),
+        service_item_id: null,
+        name: "",
+        description: null,
+        unit_price: 0,
+        quantity: 1,
+        item_type: "equipment",
+        deposit_amount: 0,
+      },
     ])
   }
 
@@ -102,8 +115,27 @@ export function QuoteBuilderClient({
     () => lines.reduce((sum, l) => sum + Math.max(0, l.quantity) * Math.max(0, l.unit_price), 0),
     [lines],
   )
+  const laborTotal = useMemo(
+    () =>
+      lines
+        .filter((l) => l.item_type === "labor")
+        .reduce((sum, l) => sum + Math.max(0, l.quantity) * Math.max(0, l.unit_price), 0),
+    [lines],
+  )
+  const depositTotal = useMemo(
+    () =>
+      lines
+        .filter((l) => l.item_type === "equipment")
+        .reduce((sum, l) => sum + Math.max(0, l.quantity) * Math.max(0, l.deposit_amount), 0),
+    [lines],
+  )
   const taxAmount = useMemo(() => subtotal * (taxRatePct / 100), [subtotal, taxRatePct])
   const total = subtotal + taxAmount
+
+  // Equipment-only jobs (no on-site labour) auto-require a deposit; owner can override.
+  const [depositOverride, setDepositOverride] = useState<boolean | null>(null)
+  const autoDepositRequired = laborTotal === 0 && depositTotal > 0
+  const depositRequired = depositOverride ?? autoDepositRequired
 
   const buildInput = () => ({
     client_name: clientName,
@@ -115,12 +147,15 @@ export function QuoteBuilderClient({
     valid_until: validUntil || null,
     notes: notes || null,
     tax_rate: taxRatePct / 100,
+    deposit_required: depositRequired,
     items: lines.map((l) => ({
       service_item_id: l.service_item_id,
       name: l.name,
       description: l.description,
       unit_price: l.unit_price,
       quantity: l.quantity,
+      item_type: l.item_type,
+      deposit_amount: l.deposit_amount,
     })),
   })
 
@@ -288,18 +323,35 @@ export function QuoteBuilderClient({
                     />
                     <div className="flex flex-wrap items-center gap-3 pt-1">
                       <label className="flex items-center gap-1.5 text-xs text-slate-500">
-                        Qty
+                        Type
+                        <select
+                          className="rounded-md border border-slate-700 bg-slate-900/60 px-2 py-1 text-sm text-white focus:border-[#8c52ff] focus:outline-none"
+                          value={line.item_type}
+                          onChange={(e) =>
+                            updateLine(line.key, {
+                              item_type: e.target.value as ItemType,
+                              deposit_amount: e.target.value === "equipment" ? line.deposit_amount : 0,
+                            })
+                          }
+                        >
+                          <option value="equipment">Equipment</option>
+                          <option value="labor">Labour</option>
+                          <option value="service">Service</option>
+                        </select>
+                      </label>
+                      <label className="flex items-center gap-1.5 text-xs text-slate-500">
+                        {line.item_type === "labor" ? "Hrs" : "Qty"}
                         <input
                           type="number"
                           min={0}
-                          step="1"
+                          step={line.item_type === "labor" ? "0.5" : "1"}
                           className="w-16 rounded-md border border-slate-700 bg-slate-900/60 px-2 py-1 text-sm text-white focus:border-[#8c52ff] focus:outline-none"
                           value={line.quantity}
                           onChange={(e) => updateLine(line.key, { quantity: Number(e.target.value) })}
                         />
                       </label>
                       <label className="flex items-center gap-1.5 text-xs text-slate-500">
-                        Unit $
+                        {line.item_type === "labor" ? "$/hr" : "Unit $"}
                         <input
                           type="number"
                           min={0}
@@ -309,6 +361,19 @@ export function QuoteBuilderClient({
                           onChange={(e) => updateLine(line.key, { unit_price: Number(e.target.value) })}
                         />
                       </label>
+                      {line.item_type === "equipment" && (
+                        <label className="flex items-center gap-1.5 text-xs text-slate-500">
+                          Deposit $
+                          <input
+                            type="number"
+                            min={0}
+                            step="0.01"
+                            className="w-24 rounded-md border border-slate-700 bg-slate-900/60 px-2 py-1 text-sm text-white focus:border-[#8c52ff] focus:outline-none"
+                            value={line.deposit_amount}
+                            onChange={(e) => updateLine(line.key, { deposit_amount: Number(e.target.value) })}
+                          />
+                        </label>
+                      )}
                       <span className="ml-auto text-sm font-semibold text-white">
                         {money(Math.max(0, line.quantity) * Math.max(0, line.unit_price))}
                       </span>
@@ -365,11 +430,42 @@ export function QuoteBuilderClient({
               </label>
               <span className="text-white">{money(taxAmount)}</span>
             </div>
+            {laborTotal > 0 && (
+              <div className="flex items-center justify-between text-slate-400">
+                <span>Labour included</span>
+                <span className="text-slate-300">{money(laborTotal)}</span>
+              </div>
+            )}
             <div className="mt-2 flex items-center justify-between border-t border-slate-700 pt-3 text-base font-semibold">
               <span className="text-white">Total</span>
               <span style={{ color: "#8c52ff" }}>{money(total)}</span>
             </div>
           </div>
+
+          {/* Security deposit control */}
+          {depositTotal > 0 && (
+            <div className="rounded-lg border border-slate-700 bg-slate-900/50 p-3">
+              <label className="flex cursor-pointer items-start gap-2.5">
+                <input
+                  type="checkbox"
+                  checked={depositRequired}
+                  onChange={(e) => setDepositOverride(e.target.checked)}
+                  className="mt-0.5 h-4 w-4 accent-[#8c52ff]"
+                />
+                <span className="text-xs text-slate-300">
+                  <span className="font-semibold text-white">Require security deposit</span> of{" "}
+                  <span className="font-semibold text-[#c4a7ff]">{money(depositTotal)}</span>
+                  <span className="mt-1 block text-slate-500">
+                    {autoDepositRequired
+                      ? "Auto-enabled: equipment rental with no on-site staff. The customer pays this refundable hold up front."
+                      : laborTotal > 0
+                        ? "Optional: your team is on-site, so a deposit usually isn't needed."
+                        : "Collected up front as a refundable hold and returned after the gear comes back."}
+                  </span>
+                </span>
+              </label>
+            </div>
+          )}
 
           <div>
             <label className={labelClass}>Valid until</label>
