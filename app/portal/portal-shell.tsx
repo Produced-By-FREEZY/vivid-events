@@ -40,20 +40,14 @@ const navItems = [
 
 function Logo({ compact = false }: { compact?: boolean }) {
   return (
-    <div
-      className={`flex items-center justify-center rounded-lg border border-slate-700/60 bg-black shadow-inner ${
-        compact ? "h-9 w-9 px-1" : "h-11 w-full px-3"
-      }`}
-    >
-      <Image
-        src="/images/vivid-events-logo.png"
-        alt="Vivid Events"
-        width={320}
-        height={180}
-        priority
-        className={compact ? "h-6 w-6 object-contain object-left" : "h-7 w-auto object-contain"}
-      />
-    </div>
+    <Image
+      src="/images/vivid-events-logo.png"
+      alt="Vivid Events"
+      width={320}
+      height={180}
+      priority
+      className={compact ? "h-8 w-8 object-contain object-center" : "h-10 w-auto object-contain"}
+    />
   )
 }
 
@@ -112,7 +106,7 @@ export function PortalShell({ children }: { children: React.ReactNode }) {
           collapsed ? "w-16" : "w-64"
         } sticky top-0 hidden h-screen shrink-0 flex-col border-r border-slate-700/50 bg-slate-900/60 transition-[width] duration-300 md:flex`}
       >
-        <div className="flex h-16 items-center border-b border-slate-700/50 px-3">
+        <div className="flex h-16 items-center justify-center border-b-2 border-[#8c52ff]/40 bg-black px-3">
           {collapsed ? <Logo compact /> : <Logo />}
         </div>
         <NavLinks activeHref={activeHref} collapsed={collapsed} />
@@ -141,7 +135,7 @@ export function PortalShell({ children }: { children: React.ReactNode }) {
                 className="w-72 border-slate-700/50 bg-slate-900 p-0 text-white [&>button]:text-slate-400"
               >
                 <SheetTitle className="sr-only">Navigation</SheetTitle>
-                <div className="flex h-16 items-center border-b border-slate-700/50 px-3">
+                <div className="flex h-16 items-center justify-center border-b-2 border-[#8c52ff]/40 bg-black px-3">
                   <Logo />
                 </div>
                 <NavLinks activeHref={activeHref} onNavigate={() => setMobileOpen(false)} />
