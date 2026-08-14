@@ -4,8 +4,9 @@ import { revalidatePath } from "next/cache"
 import { headers } from "next/headers"
 import { createClient as createServerClient } from "@/lib/supabase/server"
 import { createAdminClient } from "@/lib/supabase/admin"
-import { isEmailConfigured, personalQuoteEmail, sendMail } from "@/lib/email"
+import { isEmailConfigured, renderQuoteEmail, saveGmailDraft } from "@/lib/email"
 import { generateQuotePdf } from "@/lib/quote-pdf"
+import { getPortalSettings } from "@/app/portal/settings-actions"
 
 export type ItemType = "equipment" | "labor" | "service"
 
@@ -453,15 +454,24 @@ export async function sendQuote(quoteId: string): Promise<{ success: boolean; er
       validUntil: quote.valid_until,
     })
 
-    const { subject, html, text } = personalQuoteEmail({
-      quoteNumber: quote.quote_number,
-      clientFirstName: firstNameOf(quote.client_name),
-      eventName: quote.event_name,
-      eventDate: quote.event_date,
-      total,
-      reviewUrl,
-    })
-    await sendMail({
+    const settings = await getPortalSettings()
+    const { subject, html, text } = renderQuoteEmail(
+      {
+        subject: settings.quote_email_subject,
+        body: settings.quote_email_body,
+        signerName: settings.signer_name,
+      },
+      {
+        first_name: firstNameOf(quote.client_name),
+        event_name: quote.event_name || "your event",
+        quote_number: quote.quote_number,
+        review_link: reviewUrl,
+        signer_name: settings.signer_name,
+      },
+    )
+    // Save into the owner's Gmail Drafts (with the PDF attached) instead of
+    // sending — the owner reviews and sends it themselves from Gmail.
+    await saveGmailDraft({
       to: quote.client_email,
       subject,
       html,
@@ -469,8 +479,8 @@ export async function sendQuote(quoteId: string): Promise<{ success: boolean; er
       attachments: [{ filename: `Quotation-${quote.quote_number}.pdf`, content: pdf }],
     })
   } catch (e) {
-    console.error("[v0] sendQuote email failed:", e instanceof Error ? e.message : e)
-    return { success: false, error: "Could not send the quote email. Please try again." }
+    console.error("[v0] sendQuote draft failed:", e instanceof Error ? e.message : e)
+    return { success: false, error: "Could not save the quote to your Gmail drafts. Please try again." }
   }
 
   // Don't downgrade an already-approved/paid quote back to "sent".
@@ -512,6 +522,71 @@ export type ClientInput = {
   email: string
   phone?: string | null
   company?: string | null
+}
+
+export type ClientRecord = {
+  id: string
+  name: string
+  email: string
+  phone: string | null
+  company: string | null
+}
+
+/** List all saved clients for pickers (quote builder, etc.). */
+export async function getClients(): Promise<ClientRecord[]> {
+  const session = await requireSession()
+  if (!session) return []
+  const { data, error } = await session.supabase
+    .from("clients")
+    .select("id, name, email, phone, company")
+    .order("name", { ascending: true })
+  if (error) {
+    console.error("[v0] getClients failed:", error.message)
+    return []
+  }
+  return (data ?? []) as ClientRecord[]
+}
+
+/**
+ * Create a client directly (no quote required). Returns the created record so
+ * callers can immediately select it. If a client with the same email already
+ * exists, their details are updated instead of creating a duplicate.
+ */
+export async function addClient(
+  input: ClientInput,
+): Promise<{ success: boolean; error?: string; client?: ClientRecord }> {
+  const session = await requireSession()
+  if (!session) return { success: false, error: "You are not signed in." }
+
+  const name = input.name?.trim()
+  const email = input.email?.trim().toLowerCase()
+  if (!name) return { success: false, error: "Client name is required." }
+  if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    return { success: false, error: "A valid email is required." }
+  }
+
+  const row = {
+    name,
+    email,
+    phone: input.phone?.trim() || null,
+    company: input.company?.trim() || null,
+  }
+
+  // Upsert on email so re-adding an existing client just refreshes their info.
+  const { data, error } = await session.supabase
+    .from("clients")
+    .upsert(row, { onConflict: "email" })
+    .select("id, name, email, phone, company")
+    .single()
+
+  if (error) {
+    console.error("[v0] addClient failed:", error.message)
+    return { success: false, error: "Could not save the client." }
+  }
+
+  revalidatePath("/portal/client-list")
+  revalidatePath("/portal/dashboard")
+  return { success: true, client: data as ClientRecord }
 }
 
 /** Update a client's contact details. */

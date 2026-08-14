@@ -481,14 +481,14 @@ export function QuoteBuilderClient({
 
           {savedQuote && !sentOk && (
             <p className="rounded-lg border border-slate-700 bg-slate-900/60 p-3 text-xs text-slate-300">
-              Saved as <span className="font-semibold text-white">{savedQuote.number}</span>. Send it to the customer below.
+              Saved as <span className="font-semibold text-white">{savedQuote.number}</span>. Create the Gmail draft below.
             </p>
           )}
 
           {sentOk && (
             <div className="flex items-center gap-2 rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-3 text-sm text-emerald-300">
               <Check className="h-4 w-4 shrink-0" />
-              Quote {savedQuote?.number} sent to {clientEmail}.
+              Draft for {savedQuote?.number} saved to your Gmail — review and send it to {clientEmail} from Gmail.
             </div>
           )}
 
@@ -500,7 +500,7 @@ export function QuoteBuilderClient({
               style={{ background: "linear-gradient(to right, #8c52ff, #6b3acc)" }}
             >
               {sending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
-              {sending ? "Sending…" : "Save & Send to Customer"}
+              {sending ? "Saving draft…" : "Save Quote & Draft in Gmail"}
             </button>
             <button
               onClick={handleSave}
