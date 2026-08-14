@@ -572,12 +572,18 @@ export async function addClient(
     company: input.company?.trim() || null,
   }
 
-  // Upsert on email so re-adding an existing client just refreshes their info.
-  const { data, error } = await session.supabase
+  // No unique constraint on email, so check-then-insert/update to avoid dupes.
+  const { data: existing } = await session.supabase
     .from("clients")
-    .upsert(row, { onConflict: "email" })
-    .select("id, name, email, phone, company")
-    .single()
+    .select("id")
+    .eq("email", email)
+    .maybeSingle()
+
+  const query = existing
+    ? session.supabase.from("clients").update(row).eq("id", existing.id)
+    : session.supabase.from("clients").insert(row)
+
+  const { data, error } = await query.select("id, name, email, phone, company").single()
 
   if (error) {
     console.error("[v0] addClient failed:", error.message)

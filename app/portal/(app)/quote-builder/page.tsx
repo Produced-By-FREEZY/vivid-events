@@ -1,4 +1,4 @@
-import { getServiceItems } from "@/app/portal/quote-actions"
+import { getClients, getServiceItems } from "@/app/portal/quote-actions"
 import { QuoteBuilderClient } from "./quote-builder-client"
 
 export default async function QuoteBuilderPage({
@@ -6,7 +6,7 @@ export default async function QuoteBuilderPage({
 }: {
   searchParams: Promise<{ name?: string; email?: string; event?: string }>
 }) {
-  const [catalog, params] = await Promise.all([getServiceItems(), searchParams])
+  const [catalog, clients, params] = await Promise.all([getServiceItems(), getClients(), searchParams])
 
   return (
     <div className="space-y-6">
@@ -19,6 +19,7 @@ export default async function QuoteBuilderPage({
       </div>
       <QuoteBuilderClient
         catalog={catalog}
+        clients={clients}
         prefill={{ name: params.name ?? "", email: params.email ?? "", event: params.event ?? "" }}
       />
     </div>

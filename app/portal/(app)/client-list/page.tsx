@@ -1,4 +1,3 @@
-import { Users } from "lucide-react"
 import { createClient } from "@/lib/supabase/server"
 import { ClientsGrid, type ClientRow } from "./clients-grid"
 
@@ -27,21 +26,12 @@ export default async function ClientListPage() {
       <div>
         <h1 className="text-2xl font-semibold text-white">Client List</h1>
         <p className="mt-1 text-sm text-slate-400">
-          Everyone you have quoted. New clients are added automatically — edit their details or remove them and their
-          paperwork here.
+          Everyone in your book. Add a client directly with the button below, or they are saved automatically when you
+          build a quote — then edit or remove them here.
         </p>
       </div>
 
-      {rows.length === 0 ? (
-        <div className="rounded-2xl border border-slate-700/50 bg-slate-800/40 p-10 text-center">
-          <Users className="mx-auto h-8 w-8 text-slate-600" />
-          <p className="mt-3 text-sm text-slate-400">
-            No clients yet. They are saved automatically when you build a quote.
-          </p>
-        </div>
-      ) : (
-        <ClientsGrid clients={rows} statsByEmail={statsByEmail} />
-      )}
+      <ClientsGrid clients={rows} statsByEmail={statsByEmail} />
     </div>
   )
 }
