@@ -1,126 +1,43 @@
 "use server"
 
-import { Client } from "@notionhq/client"
+import { createAdminClient } from "@/lib/supabase/admin"
 
 export async function submitBooking(formData: FormData) {
   try {
-    if (!process.env.NOTION_API_KEY) {
-      console.error("NOTION_API_KEY is not set")
-      throw new Error("Notion API key is not configured")
+    const name = (formData.get("name") as string)?.trim()
+    const email = (formData.get("email") as string)?.trim()
+
+    if (!name || !email) {
+      throw new Error("Name and email are required")
     }
 
-    if (!process.env.NOTION_BOOKING_DATABASE_ID) {
-      console.error("NOTION_BOOKING_DATABASE_ID is not set")
-      throw new Error("Notion booking database ID is not configured")
+    const booking = {
+      name,
+      email,
+      phone: (formData.get("phone") as string) || null,
+      estimated_guests: (formData.get("estimatedGuests") as string) || null,
+      event_start_time: (formData.get("eventStartTime") as string) || null,
+      event_end_time: (formData.get("eventEndTime") as string) || null,
+      event_date: (formData.get("eventDate") as string) || null,
+      service_requested: (formData.get("serviceRequested") as string) || "event-production",
+      additional_info: (formData.get("additionalInfo") as string) || null,
+      how_did_you_hear: (formData.get("howDidYouHear") as string) || null,
     }
 
-    const notion = new Client({
-      auth: process.env.NOTION_API_KEY,
-    })
+    console.log("[v0] Submitting booking to Supabase:", { name: booking.name, email: booking.email })
 
-    // Extract new form fields
-    const name = formData.get("name") as string
-    const email = formData.get("email") as string
-    const phone = (formData.get("phone") as string) || ""
-    const estimatedGuests = (formData.get("estimatedGuests") as string) || ""
-    const eventStartTime = (formData.get("eventStartTime") as string) || ""
-    const eventEndTime = (formData.get("eventEndTime") as string) || ""
-    const eventDate = (formData.get("eventDate") as string) || ""
-    const serviceRequested = (formData.get("serviceRequested") as string) || "event-production"
-    const additionalInfo = (formData.get("additionalInfo") as string) || ""
-    const howDidYouHear = (formData.get("howDidYouHear") as string) || ""
+    const supabase = createAdminClient()
+    const { error } = await supabase.from("bookings").insert(booking)
 
-    console.log("Submitting booking to Notion:", { name, email })
+    if (error) {
+      console.error("[v0] Supabase insert error:", error.message)
+      throw new Error(error.message)
+    }
 
-    const response = await notion.pages.create({
-      parent: {
-        database_id: process.env.NOTION_BOOKING_DATABASE_ID,
-      },
-      properties: {
-        Name: {
-          title: [
-            {
-              text: {
-                content: name,
-              },
-            },
-          ],
-        },
-        Email: {
-          email: email,
-        },
-        Phone: {
-          phone_number: phone || null,
-        },
-        "Estimated Number of Guests": {
-          rich_text: [
-            {
-              text: {
-                content: estimatedGuests,
-              },
-            },
-          ],
-        },
-        "Event Start Time": {
-          rich_text: [
-            {
-              text: {
-                content: eventStartTime,
-              },
-            },
-          ],
-        },
-        "Event End Time": {
-          rich_text: [
-            {
-              text: {
-                content: eventEndTime,
-              },
-            },
-          ],
-        },
-        "Event Date": eventDate
-          ? {
-              date: {
-                start: eventDate,
-              },
-            }
-          : undefined,
-        "Service Requested": {
-          select: {
-            name: serviceRequested,
-          },
-        },
-        "Additional Information": {
-          rich_text: [
-            {
-              text: {
-                content: additionalInfo,
-              },
-            },
-          ],
-        },
-        "How did you hear about us?": {
-          rich_text: [
-            {
-              text: {
-                content: howDidYouHear,
-              },
-            },
-          ],
-        },
-        Submitted: {
-          date: {
-            start: new Date().toISOString(),
-          },
-        },
-      },
-    })
-
-    console.log("Successfully created Notion page:", response.id)
+    console.log("[v0] Booking saved successfully")
     return { success: true }
   } catch (error) {
-    console.error("Error submitting booking to Notion:", error)
+    console.error("[v0] Error submitting booking:", error)
     throw new Error(`Failed to submit booking: ${error instanceof Error ? error.message : "Unknown error"}`)
   }
 }

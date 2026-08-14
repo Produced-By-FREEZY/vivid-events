@@ -23,6 +23,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
+import { signOut } from "@/app/portal/actions"
 
 const navItems = [
   { label: "Dashboard", href: "/portal/dashboard", icon: LayoutDashboard },
@@ -40,9 +41,8 @@ export function PortalShell({ children }: { children: React.ReactNode }) {
   const activeItem = navItems.find((item) => pathname === item.href || pathname.startsWith(item.href + "/"))
   const currentLabel = activeItem?.label ?? "Dashboard"
 
-  const handleSignOut = () => {
-    // Supabase sign-out will be wired up here later.
-    router.push("/portal/login")
+  const handleSignOut = async () => {
+    await signOut()
   }
 
   return (
