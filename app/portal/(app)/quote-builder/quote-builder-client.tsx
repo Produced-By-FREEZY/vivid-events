@@ -2,9 +2,27 @@
 
 import { useMemo, useState } from "react"
 import { useRouter } from "next/navigation"
-import { Plus, Trash2, Send, Loader2, Check, Search, X } from "lucide-react"
+import { Plus, Trash2, Send, Loader2, Check, Search, X, ShieldCheck } from "lucide-react"
 import type { ServiceItem, ItemType, ClientRecord } from "@/app/portal/quote-actions"
 import { saveQuote, sendQuote } from "@/app/portal/quote-actions"
+import { PortalDatePicker } from "@/components/portal/portal-date-picker"
+
+/** Today's date at local midnight, used to disable past dates and anchor defaults. */
+function startOfToday(): Date {
+  const d = new Date()
+  d.setHours(0, 0, 0, 0)
+  return d
+}
+
+/** `yyyy-mm-dd` for a date N days from now (local time). */
+function isoDaysFromNow(days: number): string {
+  const d = startOfToday()
+  d.setDate(d.getDate() + days)
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, "0")
+  const day = String(d.getDate()).padStart(2, "0")
+  return `${y}-${m}-${day}`
+}
 
 type Line = {
   key: string
@@ -44,7 +62,8 @@ export function QuoteBuilderClient({
   const [company, setCompany] = useState("")
   const [eventName, setEventName] = useState(prefill?.event ?? "")
   const [eventDate, setEventDate] = useState("")
-  const [validUntil, setValidUntil] = useState("")
+  // Quotes expire 30 days from creation by default (owner can still adjust).
+  const [validUntil, setValidUntil] = useState(() => isoDaysFromNow(30))
   const [notes, setNotes] = useState("")
   const [taxRatePct, setTaxRatePct] = useState(5)
 
@@ -144,6 +163,14 @@ export function QuoteBuilderClient({
   const autoDepositRequired = laborTotal === 0 && depositTotal > 0
   const depositRequired = depositOverride ?? autoDepositRequired
 
+  // Owner may override the required deposit total independently of the summed
+  // per-line Deposit $ values. Empty string = "use the auto-summed amount".
+  const [depositAmountInput, setDepositAmountInput] = useState<string>("")
+  const requiredDeposit =
+    depositAmountInput.trim() !== "" && Number.isFinite(Number(depositAmountInput))
+      ? Math.max(0, Number(depositAmountInput))
+      : depositTotal
+
   // Pick an existing client from the dropdown → populate all contact fields.
   const selectClient = (id: string) => {
     setSelectedClientId(id)
@@ -174,6 +201,12 @@ export function QuoteBuilderClient({
     notes: notes || null,
     tax_rate: taxRatePct / 100,
     deposit_required: depositRequired,
+    // Send the manual override only when the owner typed one; otherwise the
+    // server falls back to the summed per-line deposits.
+    deposit_required_amount:
+      depositAmountInput.trim() !== "" && Number.isFinite(Number(depositAmountInput))
+        ? Math.max(0, Number(depositAmountInput))
+        : null,
     items: lines.map((l) => ({
       service_item_id: l.service_item_id,
       name: l.name,
@@ -279,7 +312,13 @@ export function QuoteBuilderClient({
             </div>
             <div>
               <label className={labelClass}>Event date</label>
-              <input className={inputClass} type="date" value={eventDate} onChange={(e) => setEventDate(e.target.value)} />
+              <PortalDatePicker
+                value={eventDate}
+                onChange={setEventDate}
+                placeholder="Pick the event date"
+                fromDate={startOfToday()}
+                clearable
+              />
             </div>
           </div>
         </section>
@@ -490,33 +529,75 @@ export function QuoteBuilderClient({
           </div>
 
           {/* Security deposit control */}
-          {depositTotal > 0 && (
-            <div className="rounded-lg border border-slate-700 bg-slate-900/50 p-3">
-              <label className="flex cursor-pointer items-start gap-2.5">
-                <input
-                  type="checkbox"
-                  checked={depositRequired}
-                  onChange={(e) => setDepositOverride(e.target.checked)}
-                  className="mt-0.5 h-4 w-4 accent-[#8c52ff]"
-                />
-                <span className="text-xs text-slate-300">
-                  <span className="font-semibold text-white">Require security deposit</span> of{" "}
-                  <span className="font-semibold text-[#c4a7ff]">{money(depositTotal)}</span>
-                  <span className="mt-1 block text-slate-500">
-                    {autoDepositRequired
-                      ? "Auto-enabled: equipment rental with no on-site staff. The customer pays this refundable hold up front."
-                      : laborTotal > 0
-                        ? "Optional: your team is on-site, so a deposit usually isn't needed."
-                        : "Collected up front as a refundable hold and returned after the gear comes back."}
+          <div className="rounded-lg border border-slate-700 bg-slate-900/50 p-3">
+            <label className="flex cursor-pointer items-start gap-2.5">
+              <input
+                type="checkbox"
+                checked={depositRequired}
+                onChange={(e) => setDepositOverride(e.target.checked)}
+                className="mt-0.5 h-4 w-4 accent-[#8c52ff]"
+              />
+              <span className="flex items-center gap-1.5 text-xs font-semibold text-white">
+                <ShieldCheck className="h-4 w-4 text-[#c4a7ff]" />
+                Require security deposit
+              </span>
+            </label>
+
+            {depositRequired && (
+              <div className="mt-3 space-y-2">
+                <label className="block">
+                  <span className="mb-1 block text-[11px] font-medium uppercase tracking-wide text-slate-400">
+                    Required deposit amount
                   </span>
-                </span>
-              </label>
-            </div>
-          )}
+                  <div className="relative">
+                    <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sm text-slate-500">
+                      $
+                    </span>
+                    <input
+                      type="number"
+                      min={0}
+                      step="0.01"
+                      value={depositAmountInput}
+                      onChange={(e) => setDepositAmountInput(e.target.value)}
+                      placeholder={depositTotal.toFixed(2)}
+                      className="w-full rounded-lg border border-slate-700 bg-slate-900/60 py-2 pl-7 pr-3 text-sm text-white placeholder:text-slate-500 focus:border-[#8c52ff] focus:outline-none"
+                    />
+                  </div>
+                </label>
+                <div className="flex items-center justify-between text-xs">
+                  <span className="text-slate-500">
+                    {depositAmountInput.trim() !== ""
+                      ? "Manual override"
+                      : `Auto from line items · ${money(depositTotal)}`}
+                  </span>
+                  {depositAmountInput.trim() !== "" && (
+                    <button
+                      type="button"
+                      onClick={() => setDepositAmountInput("")}
+                      className="font-medium text-[#c4a7ff] hover:text-white"
+                    >
+                      Reset to {money(depositTotal)}
+                    </button>
+                  )}
+                </div>
+                <p className="text-xs leading-relaxed text-slate-500">
+                  Charged up front with the quote as a refundable hold of{" "}
+                  <span className="font-semibold text-[#c4a7ff]">{money(requiredDeposit)}</span>, then returned via
+                  Stripe after the event once all gear is back.
+                </p>
+              </div>
+            )}
+          </div>
 
           <div>
             <label className={labelClass}>Valid until</label>
-            <input className={inputClass} type="date" value={validUntil} onChange={(e) => setValidUntil(e.target.value)} />
+            <PortalDatePicker
+              value={validUntil}
+              onChange={setValidUntil}
+              placeholder="Quote expiry date"
+              fromDate={startOfToday()}
+            />
+            <p className="mt-1 text-xs text-slate-500">Defaults to 30 days from today.</p>
           </div>
 
           {error && (

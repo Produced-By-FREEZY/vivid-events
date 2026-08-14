@@ -46,7 +46,10 @@ export default async function PublicQuotePage({
         tax_rate: Number(quote.tax_rate),
         tax_amount: Number(quote.tax_amount),
         total: Number(quote.total),
-        deposit_total: Number(quote.deposit_total ?? 0),
+        deposit_total:
+          quote.deposit_required_amount != null
+            ? Number(quote.deposit_required_amount)
+            : Number(quote.deposit_total ?? 0),
         deposit_required: Boolean(quote.deposit_required),
         labor_total: Number(quote.labor_total ?? 0),
         amount_paid: Number(quote.amount_paid ?? 0),
