@@ -484,3 +484,106 @@ export async function sendQuote(quoteId: string): Promise<{ success: boolean; er
   revalidatePath("/portal/dashboard")
   return { success: true }
 }
+
+type MutationResult = { success: boolean; error?: string }
+
+/**
+ * Permanently delete a quote/invoice and its line items. quote_items are
+ * removed automatically by the ON DELETE CASCADE foreign key.
+ */
+export async function deleteQuote(quoteId: string): Promise<MutationResult> {
+  const session = await requireSession()
+  if (!session) return { success: false, error: "You are not signed in." }
+
+  const { error } = await session.supabase.from("quotes").delete().eq("id", quoteId)
+  if (error) {
+    console.error("[v0] deleteQuote failed:", error.message)
+    return { success: false, error: "Could not delete the quote." }
+  }
+
+  revalidatePath("/portal/invoices")
+  revalidatePath("/portal/dashboard")
+  revalidatePath("/portal/client-list")
+  return { success: true }
+}
+
+export type ClientInput = {
+  name: string
+  email: string
+  phone?: string | null
+  company?: string | null
+}
+
+/** Update a client's contact details. */
+export async function updateClient(id: string, input: ClientInput): Promise<MutationResult> {
+  const session = await requireSession()
+  if (!session) return { success: false, error: "You are not signed in." }
+
+  const name = input.name?.trim()
+  const email = input.email?.trim().toLowerCase()
+  if (!name) return { success: false, error: "Client name is required." }
+  if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    return { success: false, error: "A valid email is required." }
+  }
+
+  const { error } = await session.supabase
+    .from("clients")
+    .update({
+      name,
+      email,
+      phone: input.phone?.trim() || null,
+      company: input.company?.trim() || null,
+    })
+    .eq("id", id)
+
+  if (error) {
+    console.error("[v0] updateClient failed:", error.message)
+    return { success: false, error: "Could not update the client." }
+  }
+
+  revalidatePath("/portal/client-list")
+  revalidatePath("/portal/dashboard")
+  return { success: true }
+}
+
+/**
+ * Delete a client. When `withPaperwork` is true, also permanently removes all
+ * of their quotes and invoices (matched by client id and by email), letting the
+ * owner wipe a customer back to scratch. quote_items cascade automatically.
+ */
+export async function deleteClient(id: string, withPaperwork = true): Promise<MutationResult> {
+  const session = await requireSession()
+  if (!session) return { success: false, error: "You are not signed in." }
+  const { supabase } = session
+
+  const { data: client } = await supabase.from("clients").select("email").eq("id", id).maybeSingle()
+
+  if (withPaperwork) {
+    const email = (client?.email as string | undefined)?.toLowerCase()
+    // Remove quotes linked by foreign key...
+    const { error: byIdError } = await supabase.from("quotes").delete().eq("client_id", id)
+    if (byIdError) {
+      console.error("[v0] deleteClient quotes-by-id failed:", byIdError.message)
+      return { success: false, error: "Could not delete the client's quotes." }
+    }
+    // ...and any older quotes matched only by the stored email.
+    if (email) {
+      const { error: byEmailError } = await supabase.from("quotes").delete().eq("client_email", email)
+      if (byEmailError) {
+        console.error("[v0] deleteClient quotes-by-email failed:", byEmailError.message)
+        return { success: false, error: "Could not delete the client's quotes." }
+      }
+    }
+  }
+
+  const { error } = await supabase.from("clients").delete().eq("id", id)
+  if (error) {
+    console.error("[v0] deleteClient failed:", error.message)
+    return { success: false, error: "Could not delete the client." }
+  }
+
+  revalidatePath("/portal/client-list")
+  revalidatePath("/portal/invoices")
+  revalidatePath("/portal/dashboard")
+  return { success: true }
+}

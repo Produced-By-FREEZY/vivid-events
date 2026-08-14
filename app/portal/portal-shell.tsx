@@ -2,6 +2,7 @@
 
 import type React from "react"
 import { useState } from "react"
+import Image from "next/image"
 import Link from "next/link"
 import { usePathname, useRouter } from "next/navigation"
 import {
@@ -15,6 +16,7 @@ import {
   User,
   LogOut,
   Package,
+  Menu,
 } from "lucide-react"
 import {
   DropdownMenu,
@@ -24,6 +26,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
+import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/sheet"
 import { signOut } from "@/app/portal/actions"
 
 const navItems = [
@@ -35,12 +38,66 @@ const navItems = [
   { label: "Settings", href: "/portal/settings", icon: Settings },
 ]
 
+function Logo({ compact = false }: { compact?: boolean }) {
+  return (
+    <div
+      className={`flex items-center justify-center rounded-lg border border-slate-700/60 bg-black shadow-inner ${
+        compact ? "h-9 w-9 px-1" : "h-11 w-full px-3"
+      }`}
+    >
+      <Image
+        src="/images/vivid-events-logo.png"
+        alt="Vivid Events"
+        width={320}
+        height={180}
+        priority
+        className={compact ? "h-6 w-6 object-contain object-left" : "h-7 w-auto object-contain"}
+      />
+    </div>
+  )
+}
+
+function NavLinks({
+  activeHref,
+  collapsed = false,
+  onNavigate,
+}: {
+  activeHref?: string
+  collapsed?: boolean
+  onNavigate?: () => void
+}) {
+  return (
+    <nav className="flex-1 space-y-1 p-3">
+      {navItems.map((item) => {
+        const Icon = item.icon
+        const active = item.href === activeHref
+        return (
+          <Link
+            key={item.href}
+            href={item.href}
+            onClick={onNavigate}
+            title={collapsed ? item.label : undefined}
+            className={`flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors ${
+              active ? "bg-[#8c52ff]/15 text-white" : "text-slate-400 hover:bg-slate-800/60 hover:text-white"
+            }`}
+          >
+            <Icon className="h-5 w-5 shrink-0" style={active ? { color: "#8c52ff" } : undefined} />
+            {!collapsed && <span className="truncate">{item.label}</span>}
+          </Link>
+        )
+      })}
+    </nav>
+  )
+}
+
 export function PortalShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname()
   const router = useRouter()
   const [collapsed, setCollapsed] = useState(false)
+  const [mobileOpen, setMobileOpen] = useState(false)
 
   const activeItem = navItems.find((item) => pathname === item.href || pathname.startsWith(item.href + "/"))
+  const activeHref = activeItem?.href
   const currentLabel = activeItem?.label ?? "Dashboard"
 
   const handleSignOut = async () => {
@@ -49,46 +106,19 @@ export function PortalShell({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="flex min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 text-white">
-      {/* Sidebar */}
+      {/* Desktop sidebar */}
       <aside
         className={`${
           collapsed ? "w-16" : "w-64"
         } sticky top-0 hidden h-screen shrink-0 flex-col border-r border-slate-700/50 bg-slate-900/60 transition-[width] duration-300 md:flex`}
       >
-        <div className="flex h-16 items-center gap-2 border-b border-slate-700/50 px-4">
-          <div
-            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-sm font-bold text-white"
-            style={{ background: "linear-gradient(to bottom right, #8c52ff, #6b3acc)" }}
-          >
-            V
-          </div>
-          {!collapsed && <span className="truncate font-semibold">Vivid Events</span>}
+        <div className="flex h-16 items-center border-b border-slate-700/50 px-3">
+          {collapsed ? <Logo compact /> : <Logo />}
         </div>
-
-        <nav className="flex-1 space-y-1 p-3">
-          {navItems.map((item) => {
-            const Icon = item.icon
-            const active = item === activeItem
-            return (
-              <Link
-                key={item.href}
-                href={item.href}
-                title={collapsed ? item.label : undefined}
-                className={`flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors ${
-                  active
-                    ? "bg-[#8c52ff]/15 text-white"
-                    : "text-slate-400 hover:bg-slate-800/60 hover:text-white"
-                }`}
-              >
-                <Icon
-                  className="h-5 w-5 shrink-0"
-                  style={active ? { color: "#8c52ff" } : undefined}
-                />
-                {!collapsed && <span className="truncate">{item.label}</span>}
-              </Link>
-            )
-          })}
-        </nav>
+        <NavLinks activeHref={activeHref} collapsed={collapsed} />
+        <div className="border-t border-slate-700/50 p-3">
+          {!collapsed && <p className="px-2 text-[11px] text-slate-600">Vivid Events Staff Portal</p>}
+        </div>
       </aside>
 
       {/* Main column */}
@@ -96,16 +126,40 @@ export function PortalShell({ children }: { children: React.ReactNode }) {
         {/* Header */}
         <header className="sticky top-0 z-10 flex h-16 items-center justify-between gap-4 border-b border-slate-700/50 bg-slate-900/70 px-4 backdrop-blur-sm sm:px-6">
           <div className="flex items-center gap-3">
+            {/* Mobile menu */}
+            <Sheet open={mobileOpen} onOpenChange={setMobileOpen}>
+              <SheetTrigger asChild>
+                <button
+                  className="rounded-lg p-2 text-slate-400 transition-colors hover:bg-slate-800/60 hover:text-white md:hidden"
+                  aria-label="Open menu"
+                >
+                  <Menu className="h-5 w-5" />
+                </button>
+              </SheetTrigger>
+              <SheetContent
+                side="left"
+                className="w-72 border-slate-700/50 bg-slate-900 p-0 text-white [&>button]:text-slate-400"
+              >
+                <SheetTitle className="sr-only">Navigation</SheetTitle>
+                <div className="flex h-16 items-center border-b border-slate-700/50 px-3">
+                  <Logo />
+                </div>
+                <NavLinks activeHref={activeHref} onNavigate={() => setMobileOpen(false)} />
+              </SheetContent>
+            </Sheet>
+
+            {/* Desktop collapse */}
             <button
               onClick={() => setCollapsed((c) => !c)}
-              className="rounded-lg p-2 text-slate-400 transition-colors hover:bg-slate-800/60 hover:text-white"
+              className="hidden rounded-lg p-2 text-slate-400 transition-colors hover:bg-slate-800/60 hover:text-white md:block"
               aria-label="Toggle sidebar"
             >
               <PanelLeft className="h-5 w-5" />
             </button>
+
             <nav aria-label="Breadcrumb" className="flex items-center gap-2 text-sm">
-              <span className="text-slate-500">Portal</span>
-              <ChevronRight className="h-4 w-4 text-slate-600" />
+              <span className="hidden text-slate-500 sm:inline">Portal</span>
+              <ChevronRight className="hidden h-4 w-4 text-slate-600 sm:inline" />
               <span className="font-medium text-white">{currentLabel}</span>
             </nav>
           </div>
@@ -143,7 +197,6 @@ export function PortalShell({ children }: { children: React.ReactNode }) {
           </DropdownMenu>
         </header>
 
-        {/* Blank content slate */}
         <main className="flex-1 p-4 sm:p-6 lg:p-8">{children}</main>
       </div>
     </div>
