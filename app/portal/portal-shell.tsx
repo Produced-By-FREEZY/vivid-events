@@ -14,6 +14,7 @@ import {
   ChevronRight,
   User,
   LogOut,
+  Package,
 } from "lucide-react"
 import {
   DropdownMenu,
@@ -28,6 +29,7 @@ import { signOut } from "@/app/portal/actions"
 const navItems = [
   { label: "Dashboard", href: "/portal/dashboard", icon: LayoutDashboard },
   { label: "Quote Builder", href: "/portal/quote-builder", icon: FileText },
+  { label: "Catalog", href: "/portal/catalog", icon: Package },
   { label: "Client List", href: "/portal/client-list", icon: Users },
   { label: "Invoices", href: "/portal/invoices", icon: Receipt },
   { label: "Settings", href: "/portal/settings", icon: Settings },

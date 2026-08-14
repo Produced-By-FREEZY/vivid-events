@@ -83,6 +83,117 @@ export async function getServiceItems(): Promise<ServiceItem[]> {
   return (data ?? []) as ServiceItem[]
 }
 
+/** Fetch the FULL catalog (including inactive items) for the management screen. */
+export async function getAllServiceItems(): Promise<ServiceItem[]> {
+  const session = await requireSession()
+  if (!session) return []
+  const { data, error } = await session.supabase
+    .from("service_items")
+    .select("*")
+    .order("category", { ascending: true })
+    .order("sort_order", { ascending: true })
+  if (error) {
+    console.error("[v0] getAllServiceItems failed:", error.message)
+    return []
+  }
+  return (data ?? []) as ServiceItem[]
+}
+
+export type ServiceItemInput = {
+  id?: string
+  category: string
+  name: string
+  description?: string | null
+  unit: string
+  unit_price: number
+  active?: boolean
+}
+
+type CatalogResult = { success: boolean; error?: string }
+
+function validateItem(input: ServiceItemInput): string | null {
+  if (!input.category?.trim()) return "Category is required."
+  if (!input.name?.trim()) return "Item name is required."
+  if (!input.unit?.trim()) return "Unit is required."
+  const price = Number(input.unit_price)
+  if (!Number.isFinite(price) || price < 0) return "Price must be zero or greater."
+  return null
+}
+
+/** Create or update a catalog item. */
+export async function saveServiceItem(input: ServiceItemInput): Promise<CatalogResult> {
+  const session = await requireSession()
+  if (!session) return { success: false, error: "You are not signed in." }
+
+  const validationError = validateItem(input)
+  if (validationError) return { success: false, error: validationError }
+
+  const payload = {
+    category: input.category.trim(),
+    name: input.name.trim(),
+    description: input.description?.trim() || null,
+    unit: input.unit.trim(),
+    unit_price: Math.round(Number(input.unit_price) * 100) / 100,
+    active: input.active ?? true,
+  }
+
+  const { supabase } = session
+  if (input.id) {
+    const { error } = await supabase.from("service_items").update(payload).eq("id", input.id)
+    if (error) {
+      console.error("[v0] saveServiceItem update failed:", error.message)
+      return { success: false, error: "Could not update the item." }
+    }
+  } else {
+    // Place new item at the end of its category.
+    const { data: last } = await supabase
+      .from("service_items")
+      .select("sort_order")
+      .eq("category", payload.category)
+      .order("sort_order", { ascending: false })
+      .limit(1)
+      .maybeSingle()
+    const sort_order = (last?.sort_order ?? 0) + 1
+    const { error } = await supabase.from("service_items").insert({ ...payload, sort_order })
+    if (error) {
+      console.error("[v0] saveServiceItem insert failed:", error.message)
+      return { success: false, error: "Could not create the item." }
+    }
+  }
+
+  revalidatePath("/portal/catalog")
+  revalidatePath("/portal/quote-builder")
+  return { success: true }
+}
+
+/** Toggle an item active/inactive (hidden from the quote builder when inactive). */
+export async function toggleServiceItem(id: string, active: boolean): Promise<CatalogResult> {
+  const session = await requireSession()
+  if (!session) return { success: false, error: "You are not signed in." }
+  const { error } = await session.supabase.from("service_items").update({ active }).eq("id", id)
+  if (error) {
+    console.error("[v0] toggleServiceItem failed:", error.message)
+    return { success: false, error: "Could not update the item." }
+  }
+  revalidatePath("/portal/catalog")
+  revalidatePath("/portal/quote-builder")
+  return { success: true }
+}
+
+/** Permanently delete a catalog item. Existing quotes keep their copied line data. */
+export async function deleteServiceItem(id: string): Promise<CatalogResult> {
+  const session = await requireSession()
+  if (!session) return { success: false, error: "You are not signed in." }
+  const { error } = await session.supabase.from("service_items").delete().eq("id", id)
+  if (error) {
+    console.error("[v0] deleteServiceItem failed:", error.message)
+    return { success: false, error: "Could not delete the item." }
+  }
+  revalidatePath("/portal/catalog")
+  revalidatePath("/portal/quote-builder")
+  return { success: true }
+}
+
 function computeTotals(items: QuoteLineInput[], taxRate: number) {
   const cleanItems = items
     .filter((it) => it.name.trim() && Number(it.quantity) > 0)
