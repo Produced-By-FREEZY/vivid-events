@@ -20,14 +20,20 @@ const money = (n: number) => new Intl.NumberFormat("en-CA", { style: "currency",
 let keySeq = 0
 const newKey = () => `line-${keySeq++}`
 
-export function QuoteBuilderClient({ catalog }: { catalog: ServiceItem[] }) {
+export function QuoteBuilderClient({
+  catalog,
+  prefill,
+}: {
+  catalog: ServiceItem[]
+  prefill?: { name: string; email: string; event: string }
+}) {
   const router = useRouter()
 
-  const [clientName, setClientName] = useState("")
-  const [clientEmail, setClientEmail] = useState("")
+  const [clientName, setClientName] = useState(prefill?.name ?? "")
+  const [clientEmail, setClientEmail] = useState(prefill?.email ?? "")
   const [clientPhone, setClientPhone] = useState("")
   const [company, setCompany] = useState("")
-  const [eventName, setEventName] = useState("")
+  const [eventName, setEventName] = useState(prefill?.event ?? "")
   const [eventDate, setEventDate] = useState("")
   const [validUntil, setValidUntil] = useState("")
   const [notes, setNotes] = useState("")

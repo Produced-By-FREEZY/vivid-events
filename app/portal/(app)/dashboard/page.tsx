@@ -120,10 +120,12 @@ export default async function DashboardPage() {
                     </span>
                   </div>
                   <p className="truncate text-xs text-slate-400">{b.email ?? ""}</p>
-                  {b.event_type && <p className="mt-1 truncate text-xs text-slate-500">{b.event_type}</p>}
+                  {b.service_requested && (
+                    <p className="mt-1 truncate text-xs text-slate-500">{b.service_requested}</p>
+                  )}
                   {b.email && (
                     <Link
-                      href={`/portal/quote-builder`}
+                      href={`/portal/quote-builder?name=${encodeURIComponent(b.name ?? "")}&email=${encodeURIComponent(b.email)}&event=${encodeURIComponent(b.service_requested ?? "")}`}
                       className="mt-2 inline-flex items-center gap-1 text-xs font-medium text-[#8c52ff] hover:underline"
                     >
                       Create quote <ArrowRight className="h-3 w-3" />
