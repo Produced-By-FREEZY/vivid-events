@@ -2,7 +2,7 @@
 
 import { useState } from "react"
 import { useRouter } from "next/navigation"
-import { Send, Loader2, Check, FileText, Link2, ExternalLink, Trash2 } from "lucide-react"
+import { Send, Loader2, Check, FileText, Link2, ExternalLink, Trash2, ShieldCheck, RotateCcw } from "lucide-react"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -13,8 +13,12 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
-import { sendQuote, deleteQuote } from "@/app/portal/quote-actions"
+import { sendQuote, deleteQuote, refundDeposit } from "@/app/portal/quote-actions"
 import type { QuoteRecord } from "@/app/portal/quote-actions"
+
+/** Effective refundable deposit: owner override when set, otherwise summed per-line deposits. */
+const depositAmountOf = (q: QuoteRecord) =>
+  q.deposit_required_amount != null ? Number(q.deposit_required_amount) : Number(q.deposit_total ?? 0)
 
 const money = (n: number) => new Intl.NumberFormat("en-CA", { style: "currency", currency: "CAD" }).format(n)
 
@@ -42,6 +46,23 @@ export function QuotesTable({ quotes }: { quotes: QuoteRecord[] }) {
   const [error, setError] = useState<string | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<QuoteRecord | null>(null)
   const [deleting, setDeleting] = useState(false)
+  const [refundTarget, setRefundTarget] = useState<QuoteRecord | null>(null)
+  const [refunding, setRefunding] = useState(false)
+
+  const handleRefund = async () => {
+    if (!refundTarget) return
+    setRefunding(true)
+    setError(null)
+    const result = await refundDeposit(refundTarget.id)
+    setRefunding(false)
+    if (result.success) {
+      setRefundTarget(null)
+      router.refresh()
+    } else {
+      setError(result.error ?? "Could not refund the deposit.")
+      setRefundTarget(null)
+    }
+  }
 
   const handleSend = async (id: string) => {
     setError(null)
@@ -99,7 +120,7 @@ export function QuotesTable({ quotes }: { quotes: QuoteRecord[] }) {
         <div className="rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-300">{error}</div>
       )}
       <div className="overflow-hidden rounded-2xl border border-slate-700/50 bg-slate-800/40">
-        <div className="hidden grid-cols-[110px_1fr_1fr_120px_100px_220px] gap-3 border-b border-slate-700/50 px-5 py-3 text-xs font-medium uppercase tracking-wide text-slate-400 md:grid">
+        <div className="hidden grid-cols-[110px_1fr_1fr_120px_100px_300px] gap-3 border-b border-slate-700/50 px-5 py-3 text-xs font-medium uppercase tracking-wide text-slate-400 md:grid">
           <span>Quote</span>
           <span>Client</span>
           <span>Event</span>
@@ -113,7 +134,7 @@ export function QuotesTable({ quotes }: { quotes: QuoteRecord[] }) {
             return (
               <div
                 key={q.id}
-                className="grid grid-cols-2 gap-3 px-5 py-4 text-sm md:grid-cols-[110px_1fr_1fr_120px_100px_220px] md:items-center"
+                className="grid grid-cols-2 gap-3 px-5 py-4 text-sm md:grid-cols-[110px_1fr_1fr_120px_100px_300px] md:items-center"
               >
                 <span className="min-w-0">
                   <span className="block font-semibold text-white">{q.quote_number}</span>
@@ -141,7 +162,7 @@ export function QuotesTable({ quotes }: { quotes: QuoteRecord[] }) {
                     {statusLabel[q.status] ?? q.status}
                   </span>
                 </span>
-                <span className="flex items-center gap-1.5 md:justify-end">
+                <span className="flex flex-wrap items-center gap-1.5 md:justify-end">
                   {q.public_token && (
                     <>
                       <button
@@ -182,6 +203,29 @@ export function QuotesTable({ quotes }: { quotes: QuoteRecord[] }) {
                       )}
                       {sentId === q.id ? "Drafted" : q.status === "draft" ? "Draft in Gmail" : "Re-draft"}
                     </button>
+                  )}
+                  {isPaid && q.deposit_required && depositAmountOf(q) > 0 && (
+                    q.deposit_refunded_at ? (
+                      <span
+                        title={`Deposit of ${money(depositAmountOf(q))} returned`}
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-1.5 text-xs font-medium text-emerald-300"
+                      >
+                        <ShieldCheck className="h-3.5 w-3.5" />
+                        Deposit returned
+                      </span>
+                    ) : (
+                      <button
+                        onClick={() => {
+                          setError(null)
+                          setRefundTarget(q)
+                        }}
+                        title="Return the security deposit to the customer"
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-[#8c52ff]/40 bg-[#8c52ff]/10 px-2.5 py-1.5 text-xs font-medium text-[#c4a7ff] transition-colors hover:border-[#8c52ff]/70 hover:bg-[#8c52ff]/20 hover:text-white disabled:opacity-60"
+                      >
+                        <RotateCcw className="h-3.5 w-3.5" />
+                        Refund deposit
+                      </button>
+                    )
                   )}
                   <button
                     onClick={() => {
@@ -225,6 +269,38 @@ export function QuotesTable({ quotes }: { quotes: QuoteRecord[] }) {
               className="bg-red-600 text-white hover:bg-red-700"
             >
               {deleting ? <Loader2 className="h-4 w-4 animate-spin" /> : "Delete quote"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={!!refundTarget} onOpenChange={(o) => !o && setRefundTarget(null)}>
+        <AlertDialogContent className="border-slate-700 bg-slate-900 text-white">
+          <AlertDialogHeader>
+            <AlertDialogTitle className="flex items-center gap-2">
+              <ShieldCheck className="h-5 w-5 text-[#c4a7ff]" />
+              Refund the security deposit?
+            </AlertDialogTitle>
+            <AlertDialogDescription className="text-slate-400">
+              This returns <span className="font-semibold text-white">{refundTarget ? money(depositAmountOf(refundTarget)) : ""}</span>{" "}
+              to {refundTarget?.client_name} via Stripe against their original payment for{" "}
+              {refundTarget?.invoice_number ?? refundTarget?.quote_number}. Only do this once the invoice has been
+              reviewed and all equipment is back. The quoted total stays collected.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel className="border-slate-700 bg-transparent text-slate-300 hover:bg-slate-800 hover:text-white">
+              Cancel
+            </AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(e) => {
+                e.preventDefault()
+                handleRefund()
+              }}
+              disabled={refunding}
+              className="bg-[#8c52ff] text-white hover:bg-[#7a45e6]"
+            >
+              {refunding ? <Loader2 className="h-4 w-4 animate-spin" /> : "Refund deposit"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

@@ -21,10 +21,17 @@ async function getBaseUrl(): Promise<string> {
 const cents = (n: number) => Math.round(Number(n) * 100)
 const firstNameOf = (name: string) => (name ?? "").trim().split(/\s+/)[0] || name
 
+/** Effective required deposit: owner override when set, otherwise summed per-line deposits. */
+function effectiveDeposit(quote: any): number {
+  return quote.deposit_required_amount != null
+    ? Number(quote.deposit_required_amount)
+    : Number(quote.deposit_total ?? 0)
+}
+
 /** Amount the customer actually pays: quote total plus the refundable deposit when required. */
 function payableAmount(quote: any): number {
   const total = Number(quote.total)
-  const deposit = Number(quote.deposit_total ?? 0)
+  const deposit = effectiveDeposit(quote)
   return quote.deposit_required ? Math.round((total + deposit) * 100) / 100 : total
 }
 
@@ -94,7 +101,8 @@ export async function createQuoteCheckout(token: string): Promise<ActionResult> 
     },
   ]
 
-  if (quote.deposit_required && Number(quote.deposit_total) > 0) {
+  const depositAmount = effectiveDeposit(quote)
+  if (quote.deposit_required && depositAmount > 0) {
     line_items.push({
       price_data: {
         currency: "cad",
@@ -102,7 +110,7 @@ export async function createQuoteCheckout(token: string): Promise<ActionResult> 
           name: "Refundable security deposit",
           description: "Returned in full after equipment is returned undamaged.",
         },
-        unit_amount: cents(Number(quote.deposit_total)),
+        unit_amount: cents(depositAmount),
       },
       quantity: 1,
     })
@@ -231,7 +239,7 @@ export async function confirmQuotePayment(token: string, sessionId: string): Pro
         taxRate: Number(quote.tax_rate),
         taxAmount: Number(quote.tax_amount),
         total: Number(quote.total),
-        depositTotal: Number(quote.deposit_total ?? 0),
+        depositTotal: effectiveDeposit(quote),
         depositRequired: Boolean(quote.deposit_required),
         amountDue: amountPaid,
         paid: true,

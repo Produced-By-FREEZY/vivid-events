@@ -4,7 +4,8 @@ import { revalidatePath } from "next/cache"
 import { headers } from "next/headers"
 import { createClient as createServerClient } from "@/lib/supabase/server"
 import { createAdminClient } from "@/lib/supabase/admin"
-import { isEmailConfigured, renderQuoteEmail, saveGmailDraft } from "@/lib/email"
+import { isEmailConfigured, renderQuoteEmail, saveGmailDraft, sendMail } from "@/lib/email"
+import { getStripe, isStripeConfigured } from "@/lib/stripe"
 import { generateQuotePdf } from "@/lib/quote-pdf"
 import { getPortalSettings } from "@/app/portal/settings-actions"
 
@@ -44,6 +45,8 @@ export type QuoteInput = {
   valid_until?: string | null
   tax_rate: number
   deposit_required?: boolean | null
+  /** Owner override for the required deposit total. null = use summed per-line deposits. */
+  deposit_required_amount?: number | null
   items: QuoteLineInput[]
 }
 
@@ -62,6 +65,10 @@ export type QuoteRecord = {
   labor_total: number
   deposit_total: number
   deposit_required: boolean
+  deposit_required_amount: number | null
+  deposit_refunded_at: string | null
+  deposit_refund_amount: number | null
+  stripe_payment_intent_id: string | null
   amount_paid: number
   public_token: string | null
   invoice_number: string | null
@@ -75,6 +82,8 @@ export type QuoteRecord = {
 }
 
 const TAX_RATE = 0.05 // GST default; owner can override per quote
+
+const money = (n: number) => new Intl.NumberFormat("en-CA", { style: "currency", currency: "CAD" }).format(n)
 
 async function requireSession() {
   const supabase = await createServerClient()
@@ -282,6 +291,22 @@ export async function saveQuote(input: QuoteInput): Promise<SaveResult> {
   // Equipment-only rentals (no on-site labour) require a refundable security
   // deposit to protect the gear. The owner can override this per quote.
   const depositRequired = input.deposit_required ?? (laborTotal === 0 && depositTotal > 0)
+
+  // Owner may override the required deposit total. When provided (>= 0) it wins
+  // over the summed per-line deposits; null means "use the summed amount".
+  const overrideAmount = input.deposit_required_amount
+  const depositRequiredAmount =
+    overrideAmount != null && Number.isFinite(Number(overrideAmount)) && Number(overrideAmount) >= 0
+      ? Math.round(Number(overrideAmount) * 100) / 100
+      : null
+
+  // Quotes always expire 30 days from now unless an explicit date is provided.
+  const validUntil = input.valid_until || (() => {
+    const d = new Date()
+    d.setDate(d.getDate() + 30)
+    return d.toISOString().slice(0, 10)
+  })()
+
   const publicToken = crypto.randomUUID().replace(/-/g, "")
 
   const { supabase } = session
@@ -339,9 +364,10 @@ export async function saveQuote(input: QuoteInput): Promise<SaveResult> {
       labor_total: laborTotal,
       deposit_total: depositTotal,
       deposit_required: depositRequired,
+      deposit_required_amount: depositRequiredAmount,
       public_token: publicToken,
       notes: input.notes?.trim() || null,
-      valid_until: input.valid_until || null,
+      valid_until: validUntil,
     })
     .select("*")
     .single()
@@ -421,7 +447,11 @@ export async function sendQuote(quoteId: string): Promise<{ success: boolean; er
 
   const baseUrl = await getBaseUrl()
   const reviewUrl = `${baseUrl}/quote/${publicToken}`
-  const depositTotal = Number(quote.deposit_total ?? 0)
+  // Effective deposit = owner override when set, otherwise the summed per-line deposits.
+  const depositTotal =
+    quote.deposit_required_amount != null
+      ? Number(quote.deposit_required_amount)
+      : Number(quote.deposit_total ?? 0)
   const depositRequired = Boolean(quote.deposit_required)
   const total = Number(quote.total)
   const amountDue = depositRequired ? Math.round((total + depositTotal) * 100) / 100 : total
@@ -514,6 +544,89 @@ export async function deleteQuote(quoteId: string): Promise<MutationResult> {
   revalidatePath("/portal/invoices")
   revalidatePath("/portal/dashboard")
   revalidatePath("/portal/client-list")
+  return { success: true }
+}
+
+/**
+ * Return the refundable security deposit to the customer after the event.
+ * Issues a Stripe partial refund of the deposit amount against the original
+ * payment, leaving only the quoted total collected. Idempotent and safe to
+ * click once the invoice has been reviewed and all gear is back.
+ */
+export async function refundDeposit(quoteId: string): Promise<MutationResult> {
+  const session = await requireSession()
+  if (!session) return { success: false, error: "You are not signed in." }
+  if (!isStripeConfigured()) return { success: false, error: "Payments are not set up yet." }
+
+  const { supabase } = session
+  const { data: quote, error } = await supabase.from("quotes").select("*").eq("id", quoteId).single()
+  if (error || !quote) return { success: false, error: "Quote not found." }
+
+  if (!quote.deposit_required) return { success: false, error: "This quote has no security deposit." }
+  if (!["paid", "invoiced"].includes(quote.status) || !quote.paid_at) {
+    return { success: false, error: "The deposit can only be returned after the quote is paid." }
+  }
+  if (quote.deposit_refunded_at) return { success: true } // already returned — idempotent
+  if (!quote.stripe_payment_intent_id) {
+    return { success: false, error: "No Stripe payment is linked to this quote." }
+  }
+
+  const depositAmount =
+    quote.deposit_required_amount != null ? Number(quote.deposit_required_amount) : Number(quote.deposit_total ?? 0)
+  if (!(depositAmount > 0)) return { success: false, error: "There is no deposit amount to refund." }
+
+  const stripe = getStripe()
+  let refundId: string
+  try {
+    const refund = await stripe.refunds.create(
+      {
+        payment_intent: quote.stripe_payment_intent_id,
+        amount: Math.round(depositAmount * 100),
+        metadata: { quote_id: quote.id, quote_number: quote.quote_number, kind: "security_deposit" },
+      },
+      // Idempotency so a double-click can't issue two refunds.
+      { idempotencyKey: `deposit_refund_${quote.id}` },
+    )
+    refundId = refund.id
+  } catch (e) {
+    console.error("[v0] refundDeposit stripe failed:", e instanceof Error ? e.message : e)
+    return { success: false, error: "Stripe could not process the refund. Please try again." }
+  }
+
+  const refundedAt = new Date().toISOString()
+  const { error: updErr } = await supabase
+    .from("quotes")
+    .update({
+      deposit_refunded_at: refundedAt,
+      deposit_refund_amount: depositAmount,
+      stripe_deposit_refund_id: refundId,
+    })
+    .eq("id", quote.id)
+
+  if (updErr) {
+    console.error("[v0] refundDeposit update failed:", updErr.message)
+    return { success: false, error: "Refund issued, but we could not record it. Check Stripe before retrying." }
+  }
+
+  // Best-effort confirmation email to the customer (refund is already issued).
+  try {
+    if (isEmailConfigured()) {
+      const amount = money(depositAmount)
+      const firstName = firstNameOf(quote.client_name)
+      const eventBit = quote.event_name ? ` for ${quote.event_name}` : ""
+      await sendMail({
+        to: quote.client_email,
+        subject: `Your ${amount} security deposit has been refunded`,
+        html: `<p>Hi ${firstName},</p><p>Thanks for returning the equipment${eventBit}. We&rsquo;ve refunded your refundable security deposit of <strong>${amount}</strong> to your original payment method. It typically appears within 5&ndash;10 business days.</p><p>&mdash; Vivid Events</p>`,
+        text: `Hi ${firstName},\n\nThanks for returning the equipment${eventBit}. We've refunded your refundable security deposit of ${amount} to your original payment method. It typically appears within 5-10 business days.\n\n— Vivid Events`,
+      })
+    }
+  } catch (e) {
+    console.error("[v0] refundDeposit email failed:", e instanceof Error ? e.message : e)
+  }
+
+  revalidatePath("/portal/invoices")
+  revalidatePath("/portal/dashboard")
   return { success: true }
 }
 
