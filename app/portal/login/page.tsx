@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation"
 import { Loader2, ArrowLeft, MailCheck } from "lucide-react"
 import { InputOTP, InputOTPGroup, InputOTPSlot } from "@/components/ui/input-otp"
 import { startSignIn, verifyCode, resendCode } from "@/app/portal/actions"
+import { PortalLoadingScreen } from "@/app/portal/loading-screen"
 
 type Step = "credentials" | "code"
 
@@ -18,6 +19,7 @@ export default function PortalLoginPage() {
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [resent, setResent] = useState(false)
+  const [redirecting, setRedirecting] = useState(false)
 
   const handleCredentials = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -39,7 +41,10 @@ export default function PortalLoginPage() {
     setIsLoading(true)
     const result = await verifyCode(email, code)
     if (result.success) {
-      router.push("/portal/dashboard")
+      // Show the branded loader immediately so the dashboard's pipeline
+      // figures never flash on screen before the page is ready.
+      setRedirecting(true)
+      router.replace("/portal/dashboard")
       router.refresh()
     } else {
       setIsLoading(false)
@@ -57,6 +62,10 @@ export default function PortalLoginPage() {
     } else {
       setError(result.error ?? "Could not resend the code.")
     }
+  }
+
+  if (redirecting) {
+    return <PortalLoadingScreen message="Signing you in…" />
   }
 
   return (
