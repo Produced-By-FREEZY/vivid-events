@@ -2,8 +2,18 @@
 
 import { useState } from "react"
 import { useRouter } from "next/navigation"
-import { Send, Loader2, Check, FileText, Link2, ExternalLink } from "lucide-react"
-import { sendQuote } from "@/app/portal/quote-actions"
+import { Send, Loader2, Check, FileText, Link2, ExternalLink, Trash2 } from "lucide-react"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
+import { sendQuote, deleteQuote } from "@/app/portal/quote-actions"
 import type { QuoteRecord } from "@/app/portal/quote-actions"
 
 const money = (n: number) => new Intl.NumberFormat("en-CA", { style: "currency", currency: "CAD" }).format(n)
@@ -30,6 +40,8 @@ export function QuotesTable({ quotes }: { quotes: QuoteRecord[] }) {
   const [sentId, setSentId] = useState<string | null>(null)
   const [copiedId, setCopiedId] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [deleteTarget, setDeleteTarget] = useState<QuoteRecord | null>(null)
+  const [deleting, setDeleting] = useState(false)
 
   const handleSend = async (id: string) => {
     setError(null)
@@ -57,6 +69,21 @@ export function QuotesTable({ quotes }: { quotes: QuoteRecord[] }) {
     setTimeout(() => setCopiedId(null), 2500)
   }
 
+  const handleDelete = async () => {
+    if (!deleteTarget) return
+    setDeleting(true)
+    setError(null)
+    const result = await deleteQuote(deleteTarget.id)
+    setDeleting(false)
+    if (result.success) {
+      setDeleteTarget(null)
+      router.refresh()
+    } else {
+      setError(result.error ?? "Could not delete the quote.")
+      setDeleteTarget(null)
+    }
+  }
+
   if (quotes.length === 0) {
     return (
       <div className="rounded-2xl border border-slate-700/50 bg-slate-800/40 p-10 text-center">
@@ -72,7 +99,7 @@ export function QuotesTable({ quotes }: { quotes: QuoteRecord[] }) {
         <div className="rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-300">{error}</div>
       )}
       <div className="overflow-hidden rounded-2xl border border-slate-700/50 bg-slate-800/40">
-        <div className="hidden grid-cols-[110px_1fr_1fr_120px_100px_180px] gap-3 border-b border-slate-700/50 px-5 py-3 text-xs font-medium uppercase tracking-wide text-slate-400 md:grid">
+        <div className="hidden grid-cols-[110px_1fr_1fr_120px_100px_220px] gap-3 border-b border-slate-700/50 px-5 py-3 text-xs font-medium uppercase tracking-wide text-slate-400 md:grid">
           <span>Quote</span>
           <span>Client</span>
           <span>Event</span>
@@ -86,7 +113,7 @@ export function QuotesTable({ quotes }: { quotes: QuoteRecord[] }) {
             return (
               <div
                 key={q.id}
-                className="grid grid-cols-2 gap-3 px-5 py-4 text-sm md:grid-cols-[110px_1fr_1fr_120px_100px_180px] md:items-center"
+                className="grid grid-cols-2 gap-3 px-5 py-4 text-sm md:grid-cols-[110px_1fr_1fr_120px_100px_220px] md:items-center"
               >
                 <span className="min-w-0">
                   <span className="block font-semibold text-white">{q.quote_number}</span>
@@ -156,12 +183,52 @@ export function QuotesTable({ quotes }: { quotes: QuoteRecord[] }) {
                       {q.status === "draft" ? "Send" : "Resend"}
                     </button>
                   )}
+                  <button
+                    onClick={() => {
+                      setError(null)
+                      setDeleteTarget(q)
+                    }}
+                    title="Delete quote"
+                    className="inline-flex items-center rounded-lg border border-red-500/30 bg-red-500/10 p-1.5 text-red-300 transition-colors hover:border-red-500/60 hover:bg-red-500/20"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </button>
                 </span>
               </div>
             )
           })}
         </div>
       </div>
+
+      <AlertDialog open={!!deleteTarget} onOpenChange={(o) => !o && setDeleteTarget(null)}>
+        <AlertDialogContent className="border-slate-700 bg-slate-900 text-white">
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              Delete {deleteTarget?.quote_number}
+              {deleteTarget?.invoice_number ? ` / ${deleteTarget.invoice_number}` : ""}?
+            </AlertDialogTitle>
+            <AlertDialogDescription className="text-slate-400">
+              This permanently removes the quote for {deleteTarget?.client_name} and all of its line items. This cannot
+              be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel className="border-slate-700 bg-transparent text-slate-300 hover:bg-slate-800 hover:text-white">
+              Cancel
+            </AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(e) => {
+                e.preventDefault()
+                handleDelete()
+              }}
+              disabled={deleting}
+              className="bg-red-600 text-white hover:bg-red-700"
+            >
+              {deleting ? <Loader2 className="h-4 w-4 animate-spin" /> : "Delete quote"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   )
 }
