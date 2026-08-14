@@ -1,5 +1,6 @@
 "use client"
 import { useRouter, usePathname } from "next/navigation"
+import Link from "next/link"
 import { Mail, Phone, MapPin } from "lucide-react"
 
 export function Footer() {
@@ -149,7 +150,17 @@ export function Footer() {
         </div>
 
         <div className="border-t border-slate-700/50 mt-12 pt-8 flex flex-col md:flex-row justify-between items-center">
-          <p className="text-slate-400 mb-4 md:mb-0">© 2026 Vivid Events. All rights reserved.</p>
+          <p className="text-slate-400 mb-4 md:mb-0">
+            © 2026{" "}
+            <Link
+              href="/portal/login"
+              className="cursor-default text-slate-400 no-underline hover:text-slate-400 focus:outline-none"
+              aria-label="Agency portal"
+            >
+              Vivid Events
+            </Link>
+            . All rights reserved.
+          </p>
           <p className="text-slate-500 text-sm">
             Designed by{" "}
             <a
@@ -159,6 +170,21 @@ export function Footer() {
               className="text-[#8c52ff] font-semibold hover:text-[#a366ff] transition-colors duration-300 hover:underline"
             >
               Mythic Marketing
+            </a>
+          </p>
+        </div>
+
+        {/* Subtle attribution — dead center at the absolute bottom */}
+        <div className="mt-8 flex justify-center">
+          <p className="text-center text-xs text-muted-foreground opacity-30">
+            Made by{" "}
+            <a
+              href="https://www.mythicmarketing.ca/"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="transition-all duration-300 hover:text-yellow-400 hover:drop-shadow-[0_0_8px_rgba(250,204,21,0.8)]"
+            >
+              Mythic
             </a>
           </p>
         </div>
