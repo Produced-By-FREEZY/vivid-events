@@ -40,8 +40,8 @@ const statusLabel: Record<string, string> = {
 
 export function QuotesTable({ quotes }: { quotes: QuoteRecord[] }) {
   const router = useRouter()
-  const [busyId, setBusyId] = useState<string | null>(null)
-  const [sentId, setSentId] = useState<string | null>(null)
+  const [busyKey, setBusyKey] = useState<string | null>(null)
+  const [doneKey, setDoneKey] = useState<string | null>(null)
   const [copiedId, setCopiedId] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<QuoteRecord | null>(null)
@@ -64,17 +64,17 @@ export function QuotesTable({ quotes }: { quotes: QuoteRecord[] }) {
     }
   }
 
-  const handleSend = async (id: string) => {
+  const handleSend = async (id: string, mode: "send" | "draft") => {
     setError(null)
-    setBusyId(id)
-    const result = await sendQuote(id)
-    setBusyId(null)
+    setBusyKey(`${mode}:${id}`)
+    const result = await sendQuote(id, mode)
+    setBusyKey(null)
     if (result.success) {
-      setSentId(id)
+      setDoneKey(`${mode}:${id}`)
       router.refresh()
-      setTimeout(() => setSentId(null), 4000)
+      setTimeout(() => setDoneKey(null), 4000)
     } else {
-      setError(result.error ?? "Could not send the quote.")
+      setError(result.error ?? (mode === "send" ? "Could not send the quote." : "Could not create the Gmail draft."))
     }
   }
 
@@ -189,20 +189,38 @@ export function QuotesTable({ quotes }: { quotes: QuoteRecord[] }) {
                     </>
                   )}
                   {!isPaid && (
-                    <button
-                      onClick={() => handleSend(q.id)}
-                      disabled={busyId === q.id}
-                      className="inline-flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-900/60 px-2.5 py-1.5 text-xs font-medium text-slate-200 transition-colors hover:border-[#8c52ff]/60 hover:text-white disabled:opacity-60"
-                    >
-                      {busyId === q.id ? (
-                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                      ) : sentId === q.id ? (
-                        <Check className="h-3.5 w-3.5 text-emerald-400" />
-                      ) : (
-                        <Send className="h-3.5 w-3.5" />
-                      )}
-                      {sentId === q.id ? "Drafted" : q.status === "draft" ? "Draft in Gmail" : "Re-draft"}
-                    </button>
+                    <>
+                      <button
+                        onClick={() => handleSend(q.id, "send")}
+                        disabled={busyKey === `send:${q.id}` || busyKey === `draft:${q.id}`}
+                        title="Send the quote straight to the client"
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-[#8c52ff]/40 bg-[#8c52ff]/10 px-2.5 py-1.5 text-xs font-medium text-[#c4a7ff] transition-colors hover:border-[#8c52ff]/70 hover:bg-[#8c52ff]/20 hover:text-white disabled:opacity-60"
+                      >
+                        {busyKey === `send:${q.id}` ? (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        ) : doneKey === `send:${q.id}` ? (
+                          <Check className="h-3.5 w-3.5 text-emerald-400" />
+                        ) : (
+                          <Send className="h-3.5 w-3.5" />
+                        )}
+                        {doneKey === `send:${q.id}` ? "Sent" : "Send"}
+                      </button>
+                      <button
+                        onClick={() => handleSend(q.id, "draft")}
+                        disabled={busyKey === `draft:${q.id}` || busyKey === `send:${q.id}`}
+                        title="Save an editable draft (with PDF) in your Gmail"
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-900/60 px-2.5 py-1.5 text-xs font-medium text-slate-200 transition-colors hover:border-[#8c52ff]/60 hover:text-white disabled:opacity-60"
+                      >
+                        {busyKey === `draft:${q.id}` ? (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        ) : doneKey === `draft:${q.id}` ? (
+                          <Check className="h-3.5 w-3.5 text-emerald-400" />
+                        ) : (
+                          <FileText className="h-3.5 w-3.5" />
+                        )}
+                        {doneKey === `draft:${q.id}` ? "Drafted" : "Draft"}
+                      </button>
+                    </>
                   )}
                   {isPaid && q.deposit_required && depositAmountOf(q) > 0 && (
                     q.deposit_refunded_at ? (

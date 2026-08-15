@@ -5,7 +5,16 @@ import { revalidatePath } from "next/cache"
 import { createAdminClient } from "@/lib/supabase/admin"
 import { getStripe, isStripeConfigured } from "@/lib/stripe"
 import { generateQuotePdf, type PdfLine } from "@/lib/quote-pdf"
-import { isEmailConfigured, invoicePaidEmail, sendMail } from "@/lib/email"
+import {
+  isEmailConfigured,
+  renderPaidEmail,
+  depositReleaseRequestEmail,
+  bookingConfirmationEmail,
+  sendMail,
+} from "@/lib/email"
+import { getPortalSettingsAdmin } from "@/app/portal/settings-actions"
+
+const money = (n: number) => new Intl.NumberFormat("en-CA", { style: "currency", currency: "CAD" }).format(n)
 
 type ActionResult = { success: boolean; error?: string; url?: string; status?: string }
 
@@ -246,13 +255,21 @@ export async function confirmQuotePayment(token: string, sessionId: string): Pro
         paidAt: new Date(paidAtIso).toLocaleDateString("en-CA"),
       })
 
-      const { subject, html, text } = invoicePaidEmail({
-        invoiceNumber,
-        clientFirstName: firstNameOf(quote.client_name),
-        eventName: quote.event_name,
-        amountPaid,
-        receiptUrl,
-      })
+      const settings = await getPortalSettingsAdmin()
+      const { subject, html, text } = renderPaidEmail(
+        {
+          subject: settings.paid_email_subject,
+          body: settings.paid_email_body,
+          signerName: settings.signer_name,
+        },
+        {
+          first_name: firstNameOf(quote.client_name),
+          event_name: quote.event_name || "your event",
+          invoice_number: invoiceNumber,
+          receipt_link: receiptUrl ?? "",
+          signer_name: settings.signer_name,
+        },
+      )
       await sendMail({
         to: quote.client_email,
         subject,
@@ -265,8 +282,86 @@ export async function confirmQuotePayment(token: string, sessionId: string): Pro
     console.error("[v0] confirmQuotePayment invoice email failed:", e instanceof Error ? e.message : e)
   }
 
+  // Security deposit held → email the OWNER a one-click "release deposit" link.
+  const depositAmount = effectiveDeposit(quote)
+  if (quote.deposit_required && depositAmount > 0) {
+    try {
+      const releaseToken = quote.deposit_release_token || crypto.randomUUID().replace(/-/g, "")
+      await admin
+        .from("quotes")
+        .update({
+          deposit_release_token: releaseToken,
+          deposit_release_requested_at: quote.deposit_release_requested_at ?? paidAtIso,
+        })
+        .eq("id", quote.id)
+
+      const ownerAddress = process.env.GMAIL_USER
+      if (isEmailConfigured() && ownerAddress && !quote.deposit_refunded_at) {
+        const baseUrl = await getBaseUrl()
+        const { subject, html, text } = depositReleaseRequestEmail({
+          clientName: quote.client_name,
+          eventName: quote.event_name,
+          eventDate: quote.event_date,
+          invoiceNumber,
+          depositAmount,
+          quotedTotal: Number(quote.total),
+          releaseUrl: `${baseUrl}/deposit-release/${releaseToken}`,
+        })
+        await sendMail({ to: ownerAddress, subject, html, text })
+      }
+    } catch (e) {
+      console.error("[v0] confirmQuotePayment deposit-release email failed:", e instanceof Error ? e.message : e)
+    }
+  }
+
+  // Event has a date → send calendar booking confirmations (client + owner) with .ics.
+  if (quote.event_date && !quote.calendar_confirmation_sent_at) {
+    try {
+      if (isEmailConfigured()) {
+        const client = bookingConfirmationEmail({
+          audience: "client",
+          clientName: quote.client_name,
+          eventName: quote.event_name,
+          eventDate: quote.event_date,
+          invoiceNumber,
+          quoteNumber: quote.quote_number,
+        })
+        await sendMail({
+          to: quote.client_email,
+          subject: client.subject,
+          html: client.html,
+          text: client.text,
+          attachments: [{ filename: client.icsFilename, content: Buffer.from(client.ics), contentType: "text/calendar" }],
+        })
+
+        const ownerAddress = process.env.GMAIL_USER
+        if (ownerAddress) {
+          const owner = bookingConfirmationEmail({
+            audience: "owner",
+            clientName: quote.client_name,
+            eventName: quote.event_name,
+            eventDate: quote.event_date,
+            invoiceNumber,
+            quoteNumber: quote.quote_number,
+          })
+          await sendMail({
+            to: ownerAddress,
+            subject: owner.subject,
+            html: owner.html,
+            text: owner.text,
+            attachments: [{ filename: owner.icsFilename, content: Buffer.from(owner.ics), contentType: "text/calendar" }],
+          })
+        }
+      }
+      await admin.from("quotes").update({ calendar_confirmation_sent_at: paidAtIso }).eq("id", quote.id)
+    } catch (e) {
+      console.error("[v0] confirmQuotePayment calendar email failed:", e instanceof Error ? e.message : e)
+    }
+  }
+
   revalidatePath(`/quote/${token}`)
   revalidatePath("/portal/invoices")
   revalidatePath("/portal/dashboard")
+  revalidatePath("/portal/calendar")
   return { success: true, status: "paid" }
 }

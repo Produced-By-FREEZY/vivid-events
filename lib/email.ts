@@ -190,6 +190,238 @@ function escapeRegExp(s: string) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
 }
 
+/**
+ * Render an owner-editable plain-text email (subject + body they typed) into a
+ * clean HTML + text pair. Any values passed in `links` are turned into buttons/
+ * anchors so pasted URLs read like real links, exactly like the quote email.
+ */
+function renderEditableEmail(
+  subjectTpl: string,
+  bodyTpl: string,
+  values: Record<string, string>,
+  links: string[] = [],
+) {
+  const subject = renderTemplate(subjectTpl, values).trim()
+  const text = renderTemplate(bodyTpl, values)
+
+  let htmlBody = escapeHtml(text)
+  for (const link of links) {
+    if (!link) continue
+    htmlBody = htmlBody.replace(
+      new RegExp(escapeRegExp(link), "g"),
+      `<a href="${link}" style="color:#8c52ff;font-weight:600;text-decoration:underline;">${link}</a>`,
+    )
+  }
+  htmlBody = htmlBody.replace(/\n/g, "<br/>")
+
+  const html = `<!doctype html>
+<html>
+  <body style="margin:0;padding:0;background:#ffffff;">
+    <div style="max-width:600px;margin:0 auto;padding:20px 4px;color:#1f2937;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:15px;line-height:1.6;">
+      ${htmlBody}
+    </div>
+  </body>
+</html>`
+
+  return { subject, html, text }
+}
+
+export type PaidEmailTemplate = { subject: string; body: string; signerName: string }
+export type PaidTemplateVars = {
+  first_name: string
+  event_name: string
+  invoice_number: string
+  receipt_link: string
+  signer_name: string
+}
+
+/** Owner-editable "payment received / booking confirmed" email to the customer. */
+export function renderPaidEmail(template: PaidEmailTemplate, vars: PaidTemplateVars) {
+  const values: Record<string, string> = {
+    first_name: vars.first_name,
+    event_name: vars.event_name,
+    invoice_number: vars.invoice_number,
+    receipt_link: vars.receipt_link,
+    signer_name: vars.signer_name || template.signerName || "Vivid Events",
+  }
+  return renderEditableEmail(template.subject, template.body, values, [vars.receipt_link])
+}
+
+export type DepositReleasedTemplate = { subject: string; body: string; signerName: string }
+export type DepositReleasedVars = {
+  first_name: string
+  event_name: string
+  invoice_number: string
+  deposit_refund_amount: string
+  signer_name: string
+}
+
+/** Owner-editable "your security deposit has been released" email to the customer. */
+export function renderDepositReleasedEmail(template: DepositReleasedTemplate, vars: DepositReleasedVars) {
+  const values: Record<string, string> = {
+    first_name: vars.first_name,
+    event_name: vars.event_name,
+    invoice_number: vars.invoice_number,
+    deposit_refund_amount: vars.deposit_refund_amount,
+    signer_name: vars.signer_name || template.signerName || "Vivid Events",
+  }
+  return renderEditableEmail(template.subject, template.body, values, [])
+}
+
+/**
+ * Professional, branded email sent to the OWNER after a customer pays a quote
+ * that carried a refundable security deposit. Contains a single one-click
+ * "Release deposit" button that opens the secure release page (no login).
+ */
+type DepositReleaseRequestArgs = {
+  clientName: string
+  eventName?: string | null
+  eventDate?: string | null
+  invoiceNumber: string
+  depositAmount: number
+  quotedTotal: number
+  releaseUrl: string
+}
+
+export function depositReleaseRequestEmail(a: DepositReleaseRequestArgs) {
+  const eventLine = a.eventName ? escapeHtml(a.eventName) : "the event"
+  const dateLine = a.eventDate ? new Date(a.eventDate).toLocaleDateString("en-CA", { dateStyle: "full" } as any) : null
+
+  const inner = `
+    <h1 style="color:#fff;font-size:20px;margin:0 0 6px;">Security deposit ready to release</h1>
+    <p style="margin:0 0 20px;color:#94a3b8;">${escapeHtml(a.clientName)} has paid in full for ${eventLine}${
+      dateLine ? ` on ${escapeHtml(dateLine)}` : ""
+    }. Their refundable security deposit is being held and can be released back to them once the event is over and all gear is returned undamaged.</p>
+
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="font-size:14px;margin:0 0 24px;">
+      <tr><td style="padding:8px 0;color:#94a3b8;">Invoice</td><td style="padding:8px 0;text-align:right;color:#e2e8f0;">${escapeHtml(a.invoiceNumber)}</td></tr>
+      <tr><td style="padding:8px 0;color:#94a3b8;border-top:1px solid #334155;">Quoted total (kept)</td><td style="padding:8px 0;text-align:right;color:#e2e8f0;border-top:1px solid #334155;">${money(a.quotedTotal)}</td></tr>
+      <tr><td style="padding:8px 0;color:#fff;font-weight:700;border-top:1px solid #334155;">Deposit to release</td><td style="padding:8px 0;text-align:right;color:${BRAND};font-weight:700;border-top:1px solid #334155;">${money(a.depositAmount)}</td></tr>
+    </table>
+
+    <div style="text-align:center;margin:0 0 22px;">
+      <a href="${a.releaseUrl}" style="display:inline-block;background:${BRAND};color:#ffffff;font-weight:700;font-size:15px;text-decoration:none;padding:14px 30px;border-radius:10px;">Release ${money(a.depositAmount)} deposit</a>
+    </div>
+
+    <p style="margin:0 0 6px;color:#94a3b8;font-size:13px;">Only click this once ${escapeHtml(
+      a.clientName,
+    )} has returned everything undamaged. The refund is processed instantly through Stripe against their original payment, and they'll get an automatic confirmation. The quoted total stays collected.</p>
+    <p style="margin:14px 0 0;color:#64748b;font-size:12px;">If the button doesn't work, copy this link into your browser:<br/><span style="color:#94a3b8;">${a.releaseUrl}</span></p>
+  `
+
+  const text = `Security deposit ready to release
+
+${a.clientName} has paid in full for ${a.eventName || "the event"}${dateLine ? ` on ${dateLine}` : ""}.
+
+Invoice: ${a.invoiceNumber}
+Quoted total (kept): ${money(a.quotedTotal)}
+Deposit to release: ${money(a.depositAmount)}
+
+Release the deposit here (only once all gear is back undamaged):
+${a.releaseUrl}
+
+The refund is processed instantly through Stripe against their original payment and they'll get an automatic confirmation. The quoted total stays collected.`
+
+  return {
+    subject: `Release ${money(a.depositAmount)} deposit — ${a.clientName} (${a.invoiceNumber})`,
+    html: shell(inner),
+    text,
+  }
+}
+
+/** Build a minimal RFC5545 VEVENT for an all-day booking so it drops into any calendar. */
+function buildIcs(a: { uid: string; title: string; date: string; description?: string; location?: string }) {
+  // All-day event: DTSTART;VALUE=DATE and DTEND the following day.
+  const start = a.date.replace(/-/g, "")
+  const end = (() => {
+    const d = new Date(a.date + "T00:00:00")
+    d.setDate(d.getDate() + 1)
+    return `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, "0")}${String(d.getDate()).padStart(2, "0")}`
+  })()
+  const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d{3}/, "")
+  const esc = (s: string) => s.replace(/([,;\\])/g, "\\$1").replace(/\n/g, "\\n")
+  const lines = [
+    "BEGIN:VCALENDAR",
+    "VERSION:2.0",
+    "PRODID:-//Vivid Events//Booking//EN",
+    "CALSCALE:GREGORIAN",
+    "METHOD:PUBLISH",
+    "BEGIN:VEVENT",
+    `UID:${a.uid}`,
+    `DTSTAMP:${stamp}`,
+    `DTSTART;VALUE=DATE:${start}`,
+    `DTEND;VALUE=DATE:${end}`,
+    `SUMMARY:${esc(a.title)}`,
+    a.description ? `DESCRIPTION:${esc(a.description)}` : "",
+    a.location ? `LOCATION:${esc(a.location)}` : "",
+    "END:VEVENT",
+    "END:VCALENDAR",
+  ].filter(Boolean)
+  return lines.join("\r\n")
+}
+
+type BookingConfirmationArgs = {
+  audience: "client" | "owner"
+  clientName: string
+  eventName?: string | null
+  eventDate: string
+  invoiceNumber: string
+  quoteNumber: string
+}
+
+/**
+ * Calendar booking confirmation with an attached .ics invite. Sent to both the
+ * customer and the owner once payment is confirmed and the event has a date.
+ */
+export function bookingConfirmationEmail(a: BookingConfirmationArgs) {
+  const first = firstNameOfLocal(a.clientName)
+  const prettyDate = new Date(a.eventDate + "T00:00:00").toLocaleDateString("en-CA", { dateStyle: "full" } as any)
+  const title = `Vivid Events — ${a.eventName || "Event"} (${a.clientName})`
+  const ics = buildIcs({
+    uid: `${a.quoteNumber}@vividevents.ca`,
+    title,
+    date: a.eventDate,
+    description: `Booking ${a.invoiceNumber} for ${a.clientName}.`,
+  })
+
+  const inner =
+    a.audience === "client"
+      ? `
+    <h1 style="color:#fff;font-size:20px;margin:0 0 6px;">Your event is booked in 🎉</h1>
+    <p style="margin:0 0 16px;">Hi ${escapeHtml(first)}, this is your calendar confirmation for <strong style="color:#fff;">${escapeHtml(
+      a.eventName || "your event",
+    )}</strong> on <strong style="color:#fff;">${escapeHtml(prettyDate)}</strong>.</p>
+    <p style="margin:0 0 16px;">We've attached a calendar invite (.ics) you can add to your own calendar with one tap. We'll be in touch closer to the date to finalise timings.</p>
+    <p style="margin:0;color:#94a3b8;font-size:13px;">Booking reference: ${escapeHtml(a.invoiceNumber)}</p>`
+      : `
+    <h1 style="color:#fff;font-size:20px;margin:0 0 6px;">New booking confirmed</h1>
+    <p style="margin:0 0 16px;"><strong style="color:#fff;">${escapeHtml(a.clientName)}</strong> is booked for <strong style="color:#fff;">${escapeHtml(
+      a.eventName || "an event",
+    )}</strong> on <strong style="color:#fff;">${escapeHtml(prettyDate)}</strong>.</p>
+    <p style="margin:0 0 16px;">It's been added to your portal calendar. The attached .ics will drop it into your own calendar too.</p>
+    <p style="margin:0;color:#94a3b8;font-size:13px;">Invoice ${escapeHtml(a.invoiceNumber)} · Quote ${escapeHtml(a.quoteNumber)}</p>`
+
+  const text =
+    a.audience === "client"
+      ? `Hi ${first},\n\nYour event "${a.eventName || "your event"}" is booked in for ${prettyDate}. A calendar invite is attached so you can add it to your own calendar.\n\nBooking reference: ${a.invoiceNumber}\n\n— Vivid Events`
+      : `New booking confirmed: ${a.clientName} — ${a.eventName || "an event"} on ${prettyDate}. Invoice ${a.invoiceNumber} / Quote ${a.quoteNumber}. A calendar invite is attached.`
+
+  return {
+    subject:
+      a.audience === "client"
+        ? `Your booking is confirmed — ${prettyDate}`
+        : `New booking: ${a.clientName} — ${prettyDate}`,
+    html: shell(inner),
+    text,
+    ics,
+    icsFilename: `Vivid-Events-${a.quoteNumber}.ics`,
+  }
+}
+
+function firstNameOfLocal(name: string) {
+  return (name ?? "").trim().split(/\s+/)[0] || name
+}
+
 /* ---------------------------------- Templates --------------------------------- */
 
 function shell(inner: string) {
