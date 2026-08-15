@@ -62,6 +62,9 @@ export function QuoteBuilderClient({
   const [company, setCompany] = useState("")
   const [eventName, setEventName] = useState(prefill?.event ?? "")
   const [eventDate, setEventDate] = useState("")
+  const [eventStartTime, setEventStartTime] = useState("")
+  const [eventEndTime, setEventEndTime] = useState("")
+  const [eventAddress, setEventAddress] = useState("")
   // Quotes expire 30 days from creation by default (owner can still adjust).
   const [validUntil, setValidUntil] = useState(() => isoDaysFromNow(30))
   const [notes, setNotes] = useState("")
@@ -201,6 +204,9 @@ export function QuoteBuilderClient({
     company: company || null,
     event_name: eventName || null,
     event_date: eventDate || null,
+    event_start_time: eventStartTime || null,
+    event_end_time: eventEndTime || null,
+    event_address: eventAddress || null,
     valid_until: validUntil || null,
     notes: notes || null,
     tax_rate: taxRatePct / 100,
@@ -337,7 +343,40 @@ export function QuoteBuilderClient({
                 clearable
               />
             </div>
+            <div>
+              <label className={labelClass}>Start time</label>
+              <input
+                type="time"
+                className={`${inputClass} [color-scheme:dark]`}
+                value={eventStartTime}
+                onChange={(e) => setEventStartTime(e.target.value)}
+              />
+            </div>
+            <div>
+              <label className={labelClass}>End time</label>
+              <input
+                type="time"
+                className={`${inputClass} [color-scheme:dark] disabled:opacity-50`}
+                value={eventEndTime}
+                onChange={(e) => setEventEndTime(e.target.value)}
+                disabled={!eventStartTime}
+                title={eventStartTime ? undefined : "Set a start time first"}
+              />
+            </div>
+            <div className="sm:col-span-2">
+              <label className={labelClass}>Event address</label>
+              <input
+                className={inputClass}
+                value={eventAddress}
+                onChange={(e) => setEventAddress(e.target.value)}
+                placeholder="123 Main St, Calgary, AB"
+              />
+            </div>
           </div>
+          <p className="mt-3 text-xs text-slate-500">
+            The start time drives how the booking is blocked out on your calendar. Time and address are shared with the
+            client on the quote and in their booking confirmation.
+          </p>
         </section>
 
         {/* Catalog */}

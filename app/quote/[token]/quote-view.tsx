@@ -2,7 +2,18 @@
 
 import { useEffect, useRef, useState, useTransition } from "react"
 import { useRouter } from "next/navigation"
-import { Check, Loader2, Lock, Download, ShieldCheck, PenLine, CalendarDays, CreditCard } from "lucide-react"
+import {
+  Check,
+  Loader2,
+  Lock,
+  Download,
+  ShieldCheck,
+  PenLine,
+  CalendarDays,
+  CreditCard,
+  Clock,
+  MapPin,
+} from "lucide-react"
 import { approveQuote, createQuoteCheckout, confirmQuotePayment } from "./actions"
 
 type Item = {
@@ -21,6 +32,9 @@ type Quote = {
   client_email: string
   event_name: string | null
   event_date: string | null
+  event_start_time: string | null
+  event_end_time: string | null
+  event_address: string | null
   status: string
   subtotal: number
   tax_rate: number
@@ -43,6 +57,20 @@ type Quote = {
 const money = (n: number) => new Intl.NumberFormat("en-CA", { style: "currency", currency: "CAD" }).format(n)
 const fmtDate = (s: string | null) =>
   s ? new Date(s).toLocaleDateString("en-CA", { year: "numeric", month: "long", day: "numeric" }) : ""
+const fmtTime = (t: string | null) => {
+  const m = /^(\d{1,2}):(\d{2})/.exec((t ?? "").trim())
+  if (!m) return ""
+  let h = Number(m[1])
+  const period = h >= 12 ? "PM" : "AM"
+  h = h % 12 || 12
+  return `${h}:${m[2]} ${period}`
+}
+const fmtTimeRange = (start: string | null, end: string | null) => {
+  const s = fmtTime(start)
+  if (!s) return ""
+  const e = fmtTime(end)
+  return e ? `${s}–${e}` : s
+}
 
 export function QuoteView({
   token,
@@ -182,6 +210,12 @@ export function QuoteView({
               <Meta label="Event">{quote.event_name || "—"}</Meta>
               <Meta label="Event date" icon={<CalendarDays className="h-3.5 w-3.5" />}>
                 {quote.event_date ? fmtDate(quote.event_date) : "TBD"}
+              </Meta>
+              <Meta label="Time" icon={<Clock className="h-3.5 w-3.5" />}>
+                {fmtTimeRange(quote.event_start_time, quote.event_end_time) || "TBD"}
+              </Meta>
+              <Meta label="Location" icon={<MapPin className="h-3.5 w-3.5" />}>
+                {quote.event_address || "TBD"}
               </Meta>
               <Meta label="Prepared for">{quote.client_email}</Meta>
             </div>

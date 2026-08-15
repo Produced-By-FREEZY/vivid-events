@@ -41,6 +41,9 @@ export type QuoteInput = {
   company?: string | null
   event_name?: string | null
   event_date?: string | null
+  event_start_time?: string | null
+  event_end_time?: string | null
+  event_address?: string | null
   notes?: string | null
   valid_until?: string | null
   tax_rate: number
@@ -57,6 +60,9 @@ export type QuoteRecord = {
   client_email: string
   event_name: string | null
   event_date: string | null
+  event_start_time: string | null
+  event_end_time: string | null
+  event_address: string | null
   status: string
   subtotal: number
   tax_rate: number
@@ -84,6 +90,24 @@ export type QuoteRecord = {
 const TAX_RATE = 0.05 // GST default; owner can override per quote
 
 const money = (n: number) => new Intl.NumberFormat("en-CA", { style: "currency", currency: "CAD" }).format(n)
+
+/** "14:30[:00]" → "2:30 PM"; empty for missing/invalid input. */
+function fmtTime12(t?: string | null): string {
+  const m = /^(\d{1,2}):(\d{2})/.exec((t ?? "").trim())
+  if (!m) return ""
+  let h = Number(m[1])
+  const period = h >= 12 ? "PM" : "AM"
+  h = h % 12 || 12
+  return `${h}:${m[2]} ${period}`
+}
+
+/** Compact time range: "2:30 PM–5:00 PM", "2:30 PM", or "" when no start time. */
+function fmtTimeRange(start?: string | null, end?: string | null): string {
+  const s = fmtTime12(start)
+  if (!s) return ""
+  const e = fmtTime12(end)
+  return e ? `${s}–${e}` : s
+}
 
 async function requireSession() {
   const supabase = await createServerClient()
@@ -300,6 +324,16 @@ export async function saveQuote(input: QuoteInput): Promise<SaveResult> {
       ? Math.round(Number(overrideAmount) * 100) / 100
       : null
 
+  // Normalize "HH:MM" (or "HH:MM:SS") time inputs to a Postgres time literal.
+  const normTime = (t?: string | null): string | null => {
+    const v = (t ?? "").trim()
+    if (!v) return null
+    return /^\d{2}:\d{2}(:\d{2})?$/.test(v) ? v : null
+  }
+  const eventStartTime = normTime(input.event_start_time)
+  // End time is only kept when there's a start time to anchor it.
+  const eventEndTime = eventStartTime ? normTime(input.event_end_time) : null
+
   // Quotes always expire 30 days from now unless an explicit date is provided.
   const validUntil = input.valid_until || (() => {
     const d = new Date()
@@ -356,6 +390,9 @@ export async function saveQuote(input: QuoteInput): Promise<SaveResult> {
       client_email: clientEmail,
       event_name: input.event_name?.trim() || null,
       event_date: input.event_date || null,
+      event_start_time: eventStartTime,
+      event_end_time: eventEndTime,
+      event_address: input.event_address?.trim() || null,
       status: "draft",
       subtotal,
       tax_rate: rate,
@@ -472,6 +509,8 @@ export async function sendQuote(
       clientEmail: quote.client_email,
       eventName: quote.event_name,
       eventDate: quote.event_date,
+      eventTime: fmtTimeRange(quote.event_start_time, quote.event_end_time) || null,
+      eventAddress: quote.event_address,
       items: (items ?? []).map((it) => ({
         name: it.name,
         description: it.description,

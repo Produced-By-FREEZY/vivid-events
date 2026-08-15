@@ -329,17 +329,59 @@ The refund is processed instantly through Stripe against their original payment 
   }
 }
 
-/** Build a minimal RFC5545 VEVENT for an all-day booking so it drops into any calendar. */
-function buildIcs(a: { uid: string; title: string; date: string; description?: string; location?: string }) {
-  // All-day event: DTSTART;VALUE=DATE and DTEND the following day.
-  const start = a.date.replace(/-/g, "")
-  const end = (() => {
-    const d = new Date(a.date + "T00:00:00")
-    d.setDate(d.getDate() + 1)
-    return `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, "0")}${String(d.getDate()).padStart(2, "0")}`
-  })()
+/**
+ * Build a minimal RFC5545 VEVENT so a booking drops into any calendar.
+ * When `startTime` ("HH:MM[:SS]") is provided the event is timed (floating
+ * local time, no TZ conversion); otherwise it falls back to an all-day event.
+ * A timed event with no `endTime` defaults to a 2-hour block.
+ */
+function buildIcs(a: {
+  uid: string
+  title: string
+  date: string
+  startTime?: string | null
+  endTime?: string | null
+  description?: string
+  location?: string
+}) {
+  const ymdCompact = (iso: string) => iso.replace(/-/g, "")
+  const hms = (t: string) => {
+    const m = /^(\d{1,2}):(\d{2})(?::(\d{2}))?/.exec(t.trim())
+    if (!m) return null
+    return `${m[1].padStart(2, "0")}${m[2]}${(m[3] ?? "00").padStart(2, "0")}`
+  }
+
   const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d{3}/, "")
   const esc = (s: string) => s.replace(/([,;\\])/g, "\\$1").replace(/\n/g, "\\n")
+
+  const startHms = a.startTime ? hms(a.startTime) : null
+  let dtStart: string
+  let dtEnd: string
+  if (startHms) {
+    // Timed event (floating local time).
+    dtStart = `DTSTART:${ymdCompact(a.date)}T${startHms}`
+    const endHms = a.endTime ? hms(a.endTime) : null
+    if (endHms) {
+      dtEnd = `DTEND:${ymdCompact(a.date)}T${endHms}`
+    } else {
+      // Default to a 2-hour block starting at the start time.
+      const [h, m, s] = [Number(startHms.slice(0, 2)), Number(startHms.slice(2, 4)), Number(startHms.slice(4, 6))]
+      const d = new Date(a.date + "T00:00:00")
+      d.setHours(h + 2, m, s)
+      const pad = (n: number) => String(n).padStart(2, "0")
+      dtEnd = `DTEND:${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}T${pad(d.getHours())}${pad(
+        d.getMinutes(),
+      )}${pad(d.getSeconds())}`
+    }
+  } else {
+    // All-day event: DTSTART;VALUE=DATE and DTEND the following day.
+    const d = new Date(a.date + "T00:00:00")
+    d.setDate(d.getDate() + 1)
+    const pad = (n: number) => String(n).padStart(2, "0")
+    dtStart = `DTSTART;VALUE=DATE:${ymdCompact(a.date)}`
+    dtEnd = `DTEND;VALUE=DATE:${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}`
+  }
+
   const lines = [
     "BEGIN:VCALENDAR",
     "VERSION:2.0",
@@ -349,8 +391,8 @@ function buildIcs(a: { uid: string; title: string; date: string; description?: s
     "BEGIN:VEVENT",
     `UID:${a.uid}`,
     `DTSTAMP:${stamp}`,
-    `DTSTART;VALUE=DATE:${start}`,
-    `DTEND;VALUE=DATE:${end}`,
+    dtStart,
+    dtEnd,
     `SUMMARY:${esc(a.title)}`,
     a.description ? `DESCRIPTION:${esc(a.description)}` : "",
     a.location ? `LOCATION:${esc(a.location)}` : "",
@@ -365,8 +407,21 @@ type BookingConfirmationArgs = {
   clientName: string
   eventName?: string | null
   eventDate: string
+  eventStartTime?: string | null
+  eventEndTime?: string | null
+  eventAddress?: string | null
   invoiceNumber: string
   quoteNumber: string
+}
+
+/** "14:30[:00]" → "2:30 PM"; empty for missing/invalid input. */
+function fmtTime12(t?: string | null): string {
+  const m = /^(\d{1,2}):(\d{2})/.exec((t ?? "").trim())
+  if (!m) return ""
+  let h = Number(m[1])
+  const period = h >= 12 ? "PM" : "AM"
+  h = h % 12 || 12
+  return `${h}:${m[2]} ${period}`
 }
 
 /**
@@ -376,13 +431,36 @@ type BookingConfirmationArgs = {
 export function bookingConfirmationEmail(a: BookingConfirmationArgs) {
   const first = firstNameOfLocal(a.clientName)
   const prettyDate = new Date(a.eventDate + "T00:00:00").toLocaleDateString("en-CA", { dateStyle: "full" } as any)
+  const startPretty = fmtTime12(a.eventStartTime)
+  const endPretty = fmtTime12(a.eventEndTime)
+  const timePretty = startPretty ? (endPretty ? `${startPretty}–${endPretty}` : startPretty) : ""
   const title = `Vivid Events — ${a.eventName || "Event"} (${a.clientName})`
   const ics = buildIcs({
     uid: `${a.quoteNumber}@vividevents.ca`,
     title,
     date: a.eventDate,
+    startTime: a.eventStartTime,
+    endTime: a.eventEndTime,
     description: `Booking ${a.invoiceNumber} for ${a.clientName}.`,
+    location: a.eventAddress || undefined,
   })
+
+  // Shared detail rows (time + address) shown in both audiences' emails.
+  const detailRows = `
+    ${
+      timePretty
+        ? `<p style="margin:0 0 6px;color:#e2e8f0;font-size:14px;"><span style="color:#94a3b8;">Time:</span> ${escapeHtml(
+            timePretty,
+          )}</p>`
+        : ""
+    }
+    ${
+      a.eventAddress
+        ? `<p style="margin:0 0 6px;color:#e2e8f0;font-size:14px;"><span style="color:#94a3b8;">Location:</span> ${escapeHtml(
+            a.eventAddress,
+          )}</p>`
+        : ""
+    }`
 
   const inner =
     a.audience === "client"
@@ -391,20 +469,23 @@ export function bookingConfirmationEmail(a: BookingConfirmationArgs) {
     <p style="margin:0 0 16px;">Hi ${escapeHtml(first)}, this is your calendar confirmation for <strong style="color:#fff;">${escapeHtml(
       a.eventName || "your event",
     )}</strong> on <strong style="color:#fff;">${escapeHtml(prettyDate)}</strong>.</p>
-    <p style="margin:0 0 16px;">We've attached a calendar invite (.ics) you can add to your own calendar with one tap. We'll be in touch closer to the date to finalise timings.</p>
+    ${detailRows}
+    <p style="margin:12px 0 16px;">We've attached a calendar invite (.ics) you can add to your own calendar with one tap. We'll be in touch closer to the date to finalise the details.</p>
     <p style="margin:0;color:#94a3b8;font-size:13px;">Booking reference: ${escapeHtml(a.invoiceNumber)}</p>`
       : `
     <h1 style="color:#fff;font-size:20px;margin:0 0 6px;">New booking confirmed</h1>
     <p style="margin:0 0 16px;"><strong style="color:#fff;">${escapeHtml(a.clientName)}</strong> is booked for <strong style="color:#fff;">${escapeHtml(
       a.eventName || "an event",
     )}</strong> on <strong style="color:#fff;">${escapeHtml(prettyDate)}</strong>.</p>
-    <p style="margin:0 0 16px;">It's been added to your portal calendar. The attached .ics will drop it into your own calendar too.</p>
+    ${detailRows}
+    <p style="margin:12px 0 16px;">It's been added to your portal calendar. The attached .ics will drop it into your own calendar too.</p>
     <p style="margin:0;color:#94a3b8;font-size:13px;">Invoice ${escapeHtml(a.invoiceNumber)} · Quote ${escapeHtml(a.quoteNumber)}</p>`
 
+  const detailText = `${timePretty ? `\nTime: ${timePretty}` : ""}${a.eventAddress ? `\nLocation: ${a.eventAddress}` : ""}`
   const text =
     a.audience === "client"
-      ? `Hi ${first},\n\nYour event "${a.eventName || "your event"}" is booked in for ${prettyDate}. A calendar invite is attached so you can add it to your own calendar.\n\nBooking reference: ${a.invoiceNumber}\n\n— Vivid Events`
-      : `New booking confirmed: ${a.clientName} — ${a.eventName || "an event"} on ${prettyDate}. Invoice ${a.invoiceNumber} / Quote ${a.quoteNumber}. A calendar invite is attached.`
+      ? `Hi ${first},\n\nYour event "${a.eventName || "your event"}" is booked in for ${prettyDate}.${detailText}\n\nA calendar invite is attached so you can add it to your own calendar.\n\nBooking reference: ${a.invoiceNumber}\n\n— Vivid Events`
+      : `New booking confirmed: ${a.clientName} — ${a.eventName || "an event"} on ${prettyDate}.${detailText}\nInvoice ${a.invoiceNumber} / Quote ${a.quoteNumber}. A calendar invite is attached.`
 
   return {
     subject:

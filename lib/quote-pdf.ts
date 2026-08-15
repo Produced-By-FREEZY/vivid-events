@@ -40,6 +40,8 @@ export type QuotePdfInput = {
   company?: string | null
   eventName?: string | null
   eventDate?: string | null
+  eventTime?: string | null
+  eventAddress?: string | null
   items: PdfLine[]
   subtotal: number
   taxRate: number
@@ -177,6 +179,22 @@ export async function generateQuotePdf(input: QuotePdfInput): Promise<Uint8Array
   leftY -= 13
   if (input.eventDate) {
     text(`Date: ${input.eventDate}`, midX, rightY, { size: 9.5, color: MUTED })
+    rightY -= 13
+  }
+  if (input.eventTime) {
+    text(`Time: ${input.eventTime}`, midX, rightY, { size: 9.5, color: MUTED })
+    rightY -= 13
+  }
+  if (input.eventAddress) {
+    // Keep the address on one line; trim overly long values so it can't run
+    // past the page margin.
+    const maxW = PAGE_W - MARGIN - midX
+    let addr = input.eventAddress
+    while (addr.length > 4 && font.widthOfTextAtSize(`Location: ${addr}`, 9.5) > maxW) {
+      addr = addr.slice(0, -2)
+    }
+    const label = addr === input.eventAddress ? input.eventAddress : `${addr}…`
+    text(`Location: ${label}`, midX, rightY, { size: 9.5, color: MUTED })
     rightY -= 13
   }
   y = Math.min(leftY, rightY) - 16
