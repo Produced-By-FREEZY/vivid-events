@@ -30,6 +30,24 @@ async function getBaseUrl(): Promise<string> {
 const cents = (n: number) => Math.round(Number(n) * 100)
 const firstNameOf = (name: string) => (name ?? "").trim().split(/\s+/)[0] || name
 
+/** "14:30[:00]" → "2:30 PM"; empty for missing/invalid input. */
+function fmtTime12(t?: string | null): string {
+  const m = /^(\d{1,2}):(\d{2})/.exec((t ?? "").trim())
+  if (!m) return ""
+  let h = Number(m[1])
+  const period = h >= 12 ? "PM" : "AM"
+  h = h % 12 || 12
+  return `${h}:${m[2]} ${period}`
+}
+
+/** Compact time range: "2:30 PM–5:00 PM", "2:30 PM", or "" when no start time. */
+function fmtTimeRange(start?: string | null, end?: string | null): string {
+  const s = fmtTime12(start)
+  if (!s) return ""
+  const e = fmtTime12(end)
+  return e ? `${s}–${e}` : s
+}
+
 /** Effective required deposit: owner override when set, otherwise summed per-line deposits. */
 function effectiveDeposit(quote: any): number {
   return quote.deposit_required_amount != null
@@ -243,6 +261,8 @@ export async function confirmQuotePayment(token: string, sessionId: string): Pro
         clientEmail: quote.client_email,
         eventName: quote.event_name,
         eventDate: quote.event_date,
+        eventTime: fmtTimeRange(quote.event_start_time, quote.event_end_time) || null,
+        eventAddress: quote.event_address,
         items: pdfLines,
         subtotal: Number(quote.subtotal),
         taxRate: Number(quote.tax_rate),
@@ -323,6 +343,9 @@ export async function confirmQuotePayment(token: string, sessionId: string): Pro
           clientName: quote.client_name,
           eventName: quote.event_name,
           eventDate: quote.event_date,
+          eventStartTime: quote.event_start_time,
+          eventEndTime: quote.event_end_time,
+          eventAddress: quote.event_address,
           invoiceNumber,
           quoteNumber: quote.quote_number,
         })
@@ -341,6 +364,9 @@ export async function confirmQuotePayment(token: string, sessionId: string): Pro
             clientName: quote.client_name,
             eventName: quote.event_name,
             eventDate: quote.event_date,
+            eventStartTime: quote.event_start_time,
+            eventEndTime: quote.event_end_time,
+            eventAddress: quote.event_address,
             invoiceNumber,
             quoteNumber: quote.quote_number,
           })

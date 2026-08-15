@@ -1,11 +1,14 @@
 "use client"
 
 import { useMemo, useState } from "react"
-import { ChevronLeft, ChevronRight, CalendarDays, ShieldCheck, CircleDot } from "lucide-react"
+import { ChevronLeft, ChevronRight, CalendarDays, ShieldCheck, CircleDot, Clock, MapPin } from "lucide-react"
 
 export type BookingEvent = {
   id: string
   date: string // yyyy-mm-dd
+  startTime: string | null // "HH:MM[:SS]"
+  endTime: string | null // "HH:MM[:SS]"
+  address: string | null
   clientName: string
   eventName: string | null
   total: number
@@ -15,6 +18,32 @@ export type BookingEvent = {
 }
 
 const money = (n: number) => new Intl.NumberFormat("en-CA", { style: "currency", currency: "CAD" }).format(n)
+
+/** "14:30[:00]" → "2:30 PM". Returns "" for empty/invalid input. */
+function fmtTime(t: string | null | undefined): string {
+  const v = (t ?? "").trim()
+  const m = /^(\d{1,2}):(\d{2})/.exec(v)
+  if (!m) return ""
+  let h = Number(m[1])
+  const min = m[2]
+  const period = h >= 12 ? "PM" : "AM"
+  h = h % 12 || 12
+  return `${h}:${min} ${period}`
+}
+
+/** Compact time range for a booking: "2:30 PM–5:00 PM", "2:30 PM", or "All day". */
+function fmtRange(e: Pick<BookingEvent, "startTime" | "endTime">): string {
+  const start = fmtTime(e.startTime)
+  if (!start) return "All day"
+  const end = fmtTime(e.endTime)
+  return end ? `${start}–${end}` : start
+}
+
+/** Minutes since midnight for stable chronological sort; null times sort last. */
+function minutesOf(t: string | null): number {
+  const m = /^(\d{1,2}):(\d{2})/.exec((t ?? "").trim())
+  return m ? Number(m[1]) * 60 + Number(m[2]) : Number.MAX_SAFE_INTEGER
+}
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
 const MONTHS = [
   "January",
@@ -47,6 +76,10 @@ export function CalendarClient({ events }: { events: BookingEvent[] }) {
       const list = map.get(e.date) ?? []
       list.push(e)
       map.set(e.date, list)
+    }
+    // Order each day's bookings chronologically by start time.
+    for (const list of map.values()) {
+      list.sort((a, b) => minutesOf(a.startTime) - minutesOf(b.startTime))
     }
     return map
   }, [events])
@@ -136,15 +169,21 @@ export function CalendarClient({ events }: { events: BookingEvent[] }) {
                   )}
                 </div>
                 <div className="mt-1 space-y-1">
-                  {dayEvents.slice(0, 3).map((e) => (
-                    <div
-                      key={e.id}
-                      title={`${e.eventName ?? "Event"} · ${e.clientName} · ${money(e.total)}`}
-                      className="truncate rounded-md border-l-2 border-[#8c52ff] bg-[#8c52ff]/15 px-1.5 py-0.5 text-[11px] font-medium text-[#d9c6ff]"
-                    >
-                      {e.eventName || e.clientName}
-                    </div>
-                  ))}
+                  {dayEvents.slice(0, 3).map((e) => {
+                    const t = fmtTime(e.startTime)
+                    return (
+                      <div
+                        key={e.id}
+                        title={`${fmtRange(e)} · ${e.eventName ?? "Event"} · ${e.clientName}${
+                          e.address ? ` · ${e.address}` : ""
+                        } · ${money(e.total)}`}
+                        className="truncate rounded-md border-l-2 border-[#8c52ff] bg-[#8c52ff]/15 px-1.5 py-0.5 text-[11px] font-medium text-[#d9c6ff]"
+                      >
+                        {t && <span className="mr-1 font-semibold text-white">{t}</span>}
+                        {e.eventName || e.clientName}
+                      </div>
+                    )
+                  })}
                   {dayEvents.length > 3 && (
                     <div className="px-1 text-[10px] text-slate-500">+{dayEvents.length - 3} more</div>
                   )}
@@ -178,6 +217,16 @@ export function CalendarClient({ events }: { events: BookingEvent[] }) {
                   <div className="min-w-0 flex-1">
                     <p className="truncate text-sm font-medium text-white">{e.eventName || "Event"}</p>
                     <p className="truncate text-xs text-slate-400">{e.clientName}</p>
+                    <p className="mt-0.5 flex items-center gap-1 text-xs font-medium text-[#c4a7ff]">
+                      <Clock className="h-3 w-3 shrink-0" />
+                      {fmtRange(e)}
+                    </p>
+                    {e.address && (
+                      <p className="mt-0.5 flex items-start gap-1 text-xs text-slate-400">
+                        <MapPin className="mt-0.5 h-3 w-3 shrink-0" />
+                        <span className="truncate">{e.address}</span>
+                      </p>
+                    )}
                     <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px]">
                       <span className="font-semibold text-slate-300">{money(e.total)}</span>
                       {e.invoiceNumber && <span className="text-slate-500">{e.invoiceNumber}</span>}
