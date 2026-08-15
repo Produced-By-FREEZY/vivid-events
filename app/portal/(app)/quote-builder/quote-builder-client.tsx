@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react"
 import { useRouter } from "next/navigation"
-import { Plus, Trash2, Send, Loader2, Check, Search, X, ShieldCheck } from "lucide-react"
+import { Plus, Trash2, Send, Loader2, Check, Search, X, ShieldCheck, FileText } from "lucide-react"
 import type { ServiceItem, ItemType, ClientRecord } from "@/app/portal/quote-actions"
 import { saveQuote, sendQuote } from "@/app/portal/quote-actions"
 import { PortalDatePicker } from "@/components/portal/portal-date-picker"
@@ -73,9 +73,11 @@ export function QuoteBuilderClient({
 
   const [saving, setSaving] = useState(false)
   const [sending, setSending] = useState(false)
+  const [drafting, setDrafting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [savedQuote, setSavedQuote] = useState<{ id: string; number: string } | null>(null)
   const [sentOk, setSentOk] = useState(false)
+  const [draftedOk, setDraftedOk] = useState(false)
 
   const categories = useMemo(() => ["All", ...Array.from(new Set(catalog.map((c) => c.category)))], [catalog])
 
@@ -92,6 +94,7 @@ export function QuoteBuilderClient({
   const addCatalogItem = (item: ServiceItem) => {
     setSavedQuote(null)
     setSentOk(false)
+    setDraftedOk(false)
     setLines((prev) => {
       const existing = prev.find((l) => l.service_item_id === item.id)
       if (existing) {
@@ -176,6 +179,7 @@ export function QuoteBuilderClient({
     setSelectedClientId(id)
     setSavedQuote(null)
     setSentOk(false)
+    setDraftedOk(false)
     if (!id) return
     const c = clients.find((cl) => cl.id === id)
     if (!c) return
@@ -218,42 +222,55 @@ export function QuoteBuilderClient({
     })),
   })
 
-  const handleSave = async () => {
-    setError(null)
-    setSaving(true)
+  // Ensure the quote is persisted, returning its id (or null on failure).
+  const ensureSaved = async (): Promise<string | null> => {
+    if (savedQuote?.id) return savedQuote.id
     const result = await saveQuote(buildInput())
-    setSaving(false)
-    if (result.success && result.quoteId && result.quoteNumber) {
-      setSavedQuote({ id: result.quoteId, number: result.quoteNumber })
-      router.refresh()
-    } else {
+    if (!result.success || !result.quoteId || !result.quoteNumber) {
       setError(result.error ?? "Could not save the quote.")
+      return null
     }
+    setSavedQuote({ id: result.quoteId, number: result.quoteNumber })
+    return result.quoteId
   }
 
-  const handleSaveAndSend = async () => {
+  // Send the quote + PDF straight to the client from the business inbox.
+  const handleSend = async () => {
     setError(null)
+    setDraftedOk(false)
     setSending(true)
-    let quoteId = savedQuote?.id
-    let quoteNumber = savedQuote?.number
+    const quoteId = await ensureSaved()
     if (!quoteId) {
-      const result = await saveQuote(buildInput())
-      if (!result.success || !result.quoteId) {
-        setSending(false)
-        setError(result.error ?? "Could not save the quote.")
-        return
-      }
-      quoteId = result.quoteId
-      quoteNumber = result.quoteNumber
-      setSavedQuote({ id: quoteId, number: quoteNumber! })
+      setSending(false)
+      return
     }
-    const sendResult = await sendQuote(quoteId)
+    const result = await sendQuote(quoteId, "send")
     setSending(false)
-    if (sendResult.success) {
+    if (result.success) {
       setSentOk(true)
       router.refresh()
     } else {
-      setError(sendResult.error ?? "Could not send the quote.")
+      setError(result.error ?? "Could not send the quote.")
+    }
+  }
+
+  // Save the quote + PDF as an editable draft in the owner's Gmail.
+  const handleDraft = async () => {
+    setError(null)
+    setSentOk(false)
+    setDrafting(true)
+    const quoteId = await ensureSaved()
+    if (!quoteId) {
+      setDrafting(false)
+      return
+    }
+    const result = await sendQuote(quoteId, "draft")
+    setDrafting(false)
+    if (result.success) {
+      setDraftedOk(true)
+      router.refresh()
+    } else {
+      setError(result.error ?? "Could not create the Gmail draft.")
     }
   }
 
@@ -607,13 +624,21 @@ export function QuoteBuilderClient({
             </div>
           )}
 
-          {savedQuote && !sentOk && (
+          {savedQuote && !sentOk && !draftedOk && (
             <p className="rounded-lg border border-slate-700 bg-slate-900/60 p-3 text-xs text-slate-300">
-              Saved as <span className="font-semibold text-white">{savedQuote.number}</span>. Create the Gmail draft below.
+              Saved as <span className="font-semibold text-white">{savedQuote.number}</span>. Send it to the client or
+              save a Gmail draft below.
             </p>
           )}
 
           {sentOk && (
+            <div className="flex items-center gap-2 rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-3 text-sm text-emerald-300">
+              <Check className="h-4 w-4 shrink-0" />
+              Quote {savedQuote?.number} sent to {clientEmail}.
+            </div>
+          )}
+
+          {draftedOk && (
             <div className="flex items-center gap-2 rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-3 text-sm text-emerald-300">
               <Check className="h-4 w-4 shrink-0" />
               Draft for {savedQuote?.number} saved to your Gmail — review and send it to {clientEmail} from Gmail.
@@ -622,21 +647,21 @@ export function QuoteBuilderClient({
 
           <div className="space-y-2 pt-1">
             <button
-              onClick={handleSaveAndSend}
-              disabled={sending || saving}
+              onClick={handleSend}
+              disabled={sending || drafting}
               className="flex w-full items-center justify-center gap-2 rounded-lg px-4 py-2.5 text-sm font-semibold text-white shadow-lg transition-all hover:scale-[1.01] disabled:cursor-not-allowed disabled:opacity-70"
               style={{ background: "linear-gradient(to right, #8c52ff, #6b3acc)" }}
             >
               {sending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
-              {sending ? "Saving draft…" : "Save Quote & Draft in Gmail"}
+              {sending ? "Sending…" : "Send to Client"}
             </button>
             <button
-              onClick={handleSave}
-              disabled={saving || sending}
+              onClick={handleDraft}
+              disabled={drafting || sending}
               className="flex w-full items-center justify-center gap-2 rounded-lg border border-slate-700 bg-slate-900/60 px-4 py-2.5 text-sm font-medium text-slate-200 transition-colors hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-70"
             >
-              {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-              {saving ? "Saving…" : "Save as Draft"}
+              {drafting ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileText className="h-4 w-4" />}
+              {drafting ? "Saving draft…" : "Save as Draft (Gmail)"}
             </button>
           </div>
         </div>

@@ -17,6 +17,7 @@ import {
   LogOut,
   Package,
   Menu,
+  CalendarDays,
 } from "lucide-react"
 import {
   DropdownMenu,
@@ -35,6 +36,7 @@ const navItems = [
   { label: "Quote Builder", href: "/portal/quote-builder", icon: FileText },
   { label: "Catalog", href: "/portal/catalog", icon: Package },
   { label: "Client List", href: "/portal/client-list", icon: Users },
+  { label: "Calendar", href: "/portal/calendar", icon: CalendarDays },
   { label: "Invoices", href: "/portal/invoices", icon: Receipt },
   { label: "Settings", href: "/portal/settings", icon: Settings },
 ]

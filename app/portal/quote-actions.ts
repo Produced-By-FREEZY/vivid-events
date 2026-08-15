@@ -4,7 +4,7 @@ import { revalidatePath } from "next/cache"
 import { headers } from "next/headers"
 import { createClient as createServerClient } from "@/lib/supabase/server"
 import { createAdminClient } from "@/lib/supabase/admin"
-import { isEmailConfigured, renderQuoteEmail, saveGmailDraft, sendMail } from "@/lib/email"
+import { isEmailConfigured, renderQuoteEmail, renderDepositReleasedEmail, saveGmailDraft, sendMail } from "@/lib/email"
 import { getStripe, isStripeConfigured } from "@/lib/stripe"
 import { generateQuotePdf } from "@/lib/quote-pdf"
 import { getPortalSettings } from "@/app/portal/settings-actions"
@@ -416,10 +416,17 @@ async function getBaseUrl(): Promise<string> {
 const firstNameOf = (name: string) => name.trim().split(/\s+/)[0] || name
 
 /**
- * Email a saved quote to the customer: a person-typed note with the branded
+ * Deliver a saved quote to the customer: a person-typed note with the branded
  * quotation PDF attached and a secure link to review, approve and pay online.
+ *
+ * mode "send"  → email is sent straight to the client from the business inbox.
+ * mode "draft" → email + PDF are saved to the owner's Gmail Drafts to review
+ *                and send by hand.
  */
-export async function sendQuote(quoteId: string): Promise<{ success: boolean; error?: string }> {
+export async function sendQuote(
+  quoteId: string,
+  mode: "send" | "draft" = "send",
+): Promise<{ success: boolean; error?: string }> {
   const session = await requireSession()
   if (!session) return { success: false, error: "You are not signed in." }
   if (!isEmailConfigured()) {
@@ -499,18 +506,29 @@ export async function sendQuote(quoteId: string): Promise<{ success: boolean; er
         signer_name: settings.signer_name,
       },
     )
-    // Save into the owner's Gmail Drafts (with the PDF attached) instead of
-    // sending — the owner reviews and sends it themselves from Gmail.
-    await saveGmailDraft({
+    const payload = {
       to: quote.client_email,
       subject,
       html,
       text,
       attachments: [{ filename: `Quotation-${quote.quote_number}.pdf`, content: pdf }],
-    })
+    }
+    if (mode === "draft") {
+      // Save into the owner's Gmail Drafts (PDF attached) to review + send by hand.
+      await saveGmailDraft(payload)
+    } else {
+      // Send straight to the client from the business inbox.
+      await sendMail(payload)
+    }
   } catch (e) {
-    console.error("[v0] sendQuote draft failed:", e instanceof Error ? e.message : e)
-    return { success: false, error: "Could not save the quote to your Gmail drafts. Please try again." }
+    console.error(`[v0] sendQuote ${mode} failed:`, e instanceof Error ? e.message : e)
+    return {
+      success: false,
+      error:
+        mode === "draft"
+          ? "Could not save the quote to your Gmail drafts. Please try again."
+          : "Could not send the quote to the client. Please try again.",
+    }
   }
 
   // Don't downgrade an already-approved/paid quote back to "sent".
@@ -608,18 +626,26 @@ export async function refundDeposit(quoteId: string): Promise<MutationResult> {
     return { success: false, error: "Refund issued, but we could not record it. Check Stripe before retrying." }
   }
 
-  // Best-effort confirmation email to the customer (refund is already issued).
+  // Best-effort confirmation email to the customer using the owner's editable
+  // template (refund is already issued).
   try {
     if (isEmailConfigured()) {
-      const amount = money(depositAmount)
-      const firstName = firstNameOf(quote.client_name)
-      const eventBit = quote.event_name ? ` for ${quote.event_name}` : ""
-      await sendMail({
-        to: quote.client_email,
-        subject: `Your ${amount} security deposit has been refunded`,
-        html: `<p>Hi ${firstName},</p><p>Thanks for returning the equipment${eventBit}. We&rsquo;ve refunded your refundable security deposit of <strong>${amount}</strong> to your original payment method. It typically appears within 5&ndash;10 business days.</p><p>&mdash; Vivid Events</p>`,
-        text: `Hi ${firstName},\n\nThanks for returning the equipment${eventBit}. We've refunded your refundable security deposit of ${amount} to your original payment method. It typically appears within 5-10 business days.\n\n— Vivid Events`,
-      })
+      const settings = await getPortalSettings()
+      const { subject, html, text } = renderDepositReleasedEmail(
+        {
+          subject: settings.deposit_released_email_subject,
+          body: settings.deposit_released_email_body,
+          signerName: settings.signer_name,
+        },
+        {
+          first_name: firstNameOf(quote.client_name),
+          event_name: quote.event_name || "your event",
+          invoice_number: quote.invoice_number || quote.quote_number,
+          deposit_refund_amount: money(depositAmount),
+          signer_name: settings.signer_name,
+        },
+      )
+      await sendMail({ to: quote.client_email, subject, html, text })
     }
   } catch (e) {
     console.error("[v0] refundDeposit email failed:", e instanceof Error ? e.message : e)
