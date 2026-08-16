@@ -18,6 +18,7 @@ import {
   Package,
   Menu,
   CalendarDays,
+  FileImage,
 } from "lucide-react"
 import {
   DropdownMenu,
@@ -35,6 +36,7 @@ const navItems = [
   { label: "Dashboard", href: "/portal/dashboard", icon: LayoutDashboard },
   { label: "Quote Builder", href: "/portal/quote-builder", icon: FileText },
   { label: "Catalog", href: "/portal/catalog", icon: Package },
+  { label: "Data Sheets", href: "/portal/data-sheet-generator", icon: FileImage },
   { label: "Client List", href: "/portal/client-list", icon: Users },
   { label: "Calendar", href: "/portal/calendar", icon: CalendarDays },
   { label: "Invoices", href: "/portal/invoices", icon: Receipt },
