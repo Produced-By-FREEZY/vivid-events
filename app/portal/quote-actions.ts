@@ -501,6 +501,7 @@ export async function sendQuote(
   const amountDue = depositRequired ? Math.round((total + depositTotal) * 100) / 100 : total
 
   try {
+    const settings = await getPortalSettings()
     const pdf = await generateQuotePdf({
       kind: "quote",
       number: quote.quote_number,
@@ -527,10 +528,10 @@ export async function sendQuote(
       depositRequired,
       amountDue,
       notes: quote.notes,
+      terms: settings.quote_terms,
       validUntil: quote.valid_until,
     })
 
-    const settings = await getPortalSettings()
     const { subject, html, text } = renderQuoteEmail(
       {
         subject: settings.quote_email_subject,

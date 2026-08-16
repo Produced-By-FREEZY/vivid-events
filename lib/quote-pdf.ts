@@ -51,6 +51,7 @@ export type QuotePdfInput = {
   depositRequired: boolean
   amountDue: number
   notes?: string | null
+  terms?: string | null
   validUntil?: string | null
   paid?: boolean
   paidAt?: string | null
@@ -343,6 +344,27 @@ export async function generateQuotePdf(input: QuotePdfInput): Promise<Uint8Array
       y -= 13
     }
     y -= 10
+  }
+
+  /* ---- Terms & conditions ---- */
+  if (input.terms && input.terms.trim()) {
+    ensureSpace(40)
+    y -= 4
+    text("TERMS & CONDITIONS", MARGIN, y, { size: 8, font: bold, color: BRAND })
+    y -= 14
+    for (const rawLine of input.terms.split(/\n/)) {
+      // Preserve intentional blank lines between clauses.
+      if (rawLine.trim() === "") {
+        y -= 6
+        continue
+      }
+      for (const ln of wrapText(rawLine, font, 8.5, PAGE_W - 2 * MARGIN)) {
+        ensureSpace(12)
+        text(ln, MARGIN, y, { size: 8.5, color: MUTED })
+        y -= 11
+      }
+    }
+    y -= 8
   }
 
   /* ---- Signature block (quote only) ---- */

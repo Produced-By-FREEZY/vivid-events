@@ -1,6 +1,7 @@
 import { ChangePasswordForm } from "./change-password-form"
 import { EmailTemplateForm } from "./email-template-form"
 import { PaidEmailForm, DepositReleasedEmailForm } from "./paid-email-form"
+import { QuoteTermsForm } from "./quote-terms-form"
 import { getPortalSettings } from "@/app/portal/settings-actions"
 
 export default async function SettingsPage() {
@@ -19,6 +20,18 @@ export default async function SettingsPage() {
         </p>
         <div className="mt-6">
           <EmailTemplateForm initial={settings} />
+        </div>
+      </section>
+
+      <section className="mt-8 rounded-2xl border border-slate-700/50 bg-slate-800/40 p-6 shadow-xl">
+        <h2 className="text-lg font-medium text-white">Default Quote Terms</h2>
+        <p className="mt-1 text-sm text-slate-400">
+          The terms &amp; conditions shown at the bottom of every client quote — both the online version they approve
+          and pay, and the quotation PDF that gets emailed. Edit them here and they&apos;ll appear on all quotes sent
+          from now on.
+        </p>
+        <div className="mt-6">
+          <QuoteTermsForm initial={settings.quote_terms} />
         </div>
       </section>
 

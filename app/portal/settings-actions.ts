@@ -12,9 +12,39 @@ export type PortalSettings = {
   paid_email_body: string
   deposit_released_email_subject: string
   deposit_released_email_body: string
+  quote_terms: string
 }
 
 const SETTINGS_ID = 1
+
+/** Sensible default terms & conditions for an AV / lighting event rental company. */
+const DEFAULT_QUOTE_TERMS = `Terms & Conditions
+1. Scope of Services
+This quotation covers the equipment, staffing and services specifically listed above for the stated event date, times and location. Any changes to the run sheet, added gear, extra hours, or a change of venue may affect pricing and availability and will be confirmed in writing before they take effect.
+
+2. Booking & Deposit
+Dates are held on a first-come basis and are only confirmed once this quote is approved and payment is received. For equipment-only rentals a refundable security deposit is collected up front (see section 4). Approving this quote confirms you have the authority to book on behalf of the event.
+
+3. Payment Terms
+Full payment of the quoted total is due at the time of approval to secure your booking, unless a separate payment schedule has been agreed in writing. Bookings made within 7 days of the event are due in full immediately. All prices are in CAD and include applicable taxes where shown.
+
+4. Refundable Security Deposit
+Equipment-only rentals (no on-site staff) require a refundable security deposit collected with payment. It is returned in full within 3 business days of the equipment being returned on time and undamaged. The cost of any loss, damage, or missing items will be deducted from the deposit, and you remain responsible for costs exceeding the deposit.
+
+5. Cancellations & Rescheduling
+Cancellations made 14 or more days before the event receive a full refund of amounts paid, less the security deposit handling where applicable. Cancellations within 14 days may be subject to a charge of up to 50% of the total, and within 48 hours up to 100%, to cover reserved gear and crew. We will always work with you to reschedule where our calendar allows.
+
+6. Equipment Care & Liability
+All equipment remains the property of Vivid Events at all times. The client is responsible for the safe use and security of the gear from delivery/setup until collection, including protection from weather, liquids, theft and misuse. Vivid Events is not liable for delays or losses caused by circumstances beyond our reasonable control, including venue restrictions or power failures.
+
+7. Setup, Access & Power
+The client is responsible for providing safe, timely venue access, adequate and stable power, and a suitable weather-protected space for the equipment. Delays caused by venue access, power issues, or incomplete information may reduce setup time and are not grounds for a refund.
+
+8. Force Majeure
+Neither party is liable for failure to perform due to events beyond reasonable control (e.g. severe weather, power outages, illness, government restrictions). In such cases we will make every reasonable effort to reschedule or provide a fair credit.
+
+9. Quote Validity
+This quotation is valid for the number of days shown on the quote from the date of issue. Prices, equipment and crew availability are subject to change if the booking is confirmed after this period.`
 
 const DEFAULTS: PortalSettings = {
   quote_email_subject: "Vivid Events - Your quotation for {event_name} ({quote_number})",
@@ -60,6 +90,7 @@ Thanks again for choosing us for {event_name} — it was a pleasure being part o
 All the best,
 {signer_name}
 Vivid Events`,
+  quote_terms: DEFAULT_QUOTE_TERMS,
 }
 
 async function requireSession() {
@@ -79,7 +110,7 @@ export async function getPortalSettings(): Promise<PortalSettings> {
   const { data, error } = await session.supabase
     .from("portal_settings")
     .select(
-      "quote_email_subject, quote_email_body, signer_name, paid_email_subject, paid_email_body, deposit_released_email_subject, deposit_released_email_body",
+      "quote_email_subject, quote_email_body, signer_name, paid_email_subject, paid_email_body, deposit_released_email_subject, deposit_released_email_body, quote_terms",
     )
     .eq("id", SETTINGS_ID)
     .maybeSingle()
@@ -98,6 +129,7 @@ export async function getPortalSettings(): Promise<PortalSettings> {
     deposit_released_email_subject:
       data?.deposit_released_email_subject ?? DEFAULTS.deposit_released_email_subject,
     deposit_released_email_body: data?.deposit_released_email_body ?? DEFAULTS.deposit_released_email_body,
+    quote_terms: data?.quote_terms ?? DEFAULTS.quote_terms,
   }
 }
 
@@ -113,7 +145,7 @@ export async function getPortalSettingsAdmin(): Promise<PortalSettings> {
     const { data } = await admin
       .from("portal_settings")
       .select(
-        "quote_email_subject, quote_email_body, signer_name, paid_email_subject, paid_email_body, deposit_released_email_subject, deposit_released_email_body",
+        "quote_email_subject, quote_email_body, signer_name, paid_email_subject, paid_email_body, deposit_released_email_subject, deposit_released_email_body, quote_terms",
       )
       .eq("id", SETTINGS_ID)
       .maybeSingle()
@@ -126,6 +158,7 @@ export async function getPortalSettingsAdmin(): Promise<PortalSettings> {
       deposit_released_email_subject:
         data?.deposit_released_email_subject ?? DEFAULTS.deposit_released_email_subject,
       deposit_released_email_body: data?.deposit_released_email_body ?? DEFAULTS.deposit_released_email_body,
+      quote_terms: data?.quote_terms ?? DEFAULTS.quote_terms,
     }
   } catch (e) {
     console.error("[v0] getPortalSettingsAdmin failed:", e instanceof Error ? e.message : e)
@@ -230,6 +263,37 @@ export async function saveDepositReleasedEmailSettings(input: {
   if (error) {
     console.error("[v0] saveDepositReleasedEmailSettings failed:", error.message)
     return { success: false, error: "Could not save your settings. Please try again." }
+  }
+
+  revalidatePath("/portal/settings")
+  return { success: true }
+}
+
+/**
+ * Persist the owner's default quote terms & conditions. These are rendered at
+ * the bottom of the customer-facing quote and the quotation PDF that is sent.
+ */
+export async function saveQuoteTermsSettings(input: {
+  quote_terms: string
+}): Promise<SaveSettingsResult> {
+  const session = await requireSession()
+  if (!session) return { success: false, error: "You are not signed in." }
+
+  const terms = input.quote_terms?.trim()
+  if (!terms) return { success: false, error: "The quote terms can't be empty." }
+
+  const { error } = await session.supabase.from("portal_settings").upsert(
+    {
+      id: SETTINGS_ID,
+      quote_terms: terms,
+      updated_at: new Date().toISOString(),
+    },
+    { onConflict: "id" },
+  )
+
+  if (error) {
+    console.error("[v0] saveQuoteTermsSettings failed:", error.message)
+    return { success: false, error: "Could not save your quote terms. Please try again." }
   }
 
   revalidatePath("/portal/settings")

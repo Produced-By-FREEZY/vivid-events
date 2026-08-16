@@ -1,6 +1,7 @@
 import { notFound } from "next/navigation"
 import type { Metadata } from "next"
 import { createAdminClient } from "@/lib/supabase/admin"
+import { getPortalSettingsAdmin } from "@/app/portal/settings-actions"
 import { QuoteView } from "./quote-view"
 
 export const dynamic = "force-dynamic"
@@ -30,11 +31,14 @@ export default async function PublicQuotePage({
     .eq("quote_id", quote.id)
     .order("sort_order", { ascending: true })
 
+  const settings = await getPortalSettingsAdmin()
+
   return (
     <QuoteView
       token={token}
       sessionId={session_id ?? null}
       canceled={canceled === "1"}
+      terms={settings.quote_terms}
       quote={{
         quote_number: quote.quote_number,
         client_name: quote.client_name,
