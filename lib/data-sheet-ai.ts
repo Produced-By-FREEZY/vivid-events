@@ -3,26 +3,24 @@ import "server-only"
 /**
  * AI helpers for the Product Data Sheet generator.
  *
- * Text (marketing copy + normalized spec rows) is generated with Gemini via the
- * Vercel AI Gateway. Event-action hero/gallery images are generated with Google's
- * "Nano Banana" image model, which takes the owner's reference photos as input and
- * re-renders the product in polished, high-contrast event lighting.
+ * Everything runs through the Vercel AI Gateway via the AI SDK (`ai` package),
+ * which authenticates automatically on Vercel — no AI_GATEWAY_API_KEY needed.
  *
- * Image generation requires paid AI Gateway credits. When it is unavailable (e.g.
- * free tier) the image helpers return an empty list and the caller gracefully falls
- * back to the owner's uploaded reference photos — the feature keeps working, and the
- * AI shots turn on automatically once credits are added.
+ * - Marketing copy + normalized spec rows: Gemini text model (`generateObject`).
+ * - Event "in action" shots + a clean studio hero: Gemini image model
+ *   (`generateText` → `result.files`). When reference photos are supplied they
+ *   are passed in as multimodal input so the generated scenes stay faithful to
+ *   the real fixture.
+ *
+ * All image helpers degrade gracefully: on any failure they return an empty
+ * result and the caller falls back to the owner's uploaded photos.
  */
 
-const GATEWAY_URL = "https://ai-gateway.vercel.sh/v1/chat/completions"
+import { generateObject, generateText } from "ai"
+import { z } from "zod"
+
 const TEXT_MODEL = "google/gemini-2.5-flash"
 const IMAGE_MODEL = "google/gemini-3.1-flash-image"
-
-function authHeader() {
-  const key = process.env.AI_GATEWAY_API_KEY
-  if (!key) throw new Error("AI_GATEWAY_API_KEY is not configured")
-  return `Bearer ${key}`
-}
 
 export type SpecItem = { label: string; value: string }
 
@@ -39,71 +37,55 @@ export type RefImage = { dataUrl: string }
 /* Marketing copy + structured specs                                   */
 /* ------------------------------------------------------------------ */
 
+const copySchema = z.object({
+  tagline: z.string().describe("A short, punchy 4-8 word headline"),
+  marketingCopy: z
+    .string()
+    .describe("Two short paragraphs (max ~90 words total) of persuasive, benefit-led marketing copy. Plain text."),
+  specItems: z
+    .array(z.object({ label: z.string(), value: z.string() }))
+    .describe("Between 4 and 8 clean technical spec rows"),
+})
+
 export async function generateMarketingCopy(productName: string, specifications: string): Promise<CopyResult> {
   const system =
     "You are a senior copywriter for Vivid Events, a premium audio, video, lighting and event-production rental company. " +
-    "You write punchy, professional marketing copy for product data sheets that help event planners rent gear. " +
-    "Always respond with valid minified JSON only — no markdown, no code fences."
+    "You write punchy, professional marketing copy for product data sheets that help event planners rent gear."
 
-  const user = `Product / fixture name: ${productName || "(unnamed product)"}
+  const prompt = `Product / fixture name: ${productName || "(unnamed product)"}
 Owner-supplied specifications & details:
 """
 ${specifications || "(none provided)"}
 """
 
-Return JSON with exactly this shape:
-{
-  "tagline": "a short, punchy 4-8 word headline",
-  "marketingCopy": "2 short paragraphs (max ~90 words total) of persuasive marketing copy describing the product in action at live events. Confident, vivid, benefit-led. Plain text, no markdown.",
-  "specItems": [ { "label": "Spec name", "value": "Spec value" } ]
-}
-
-Rules for specItems:
-- Extract concrete technical specs from the details above into clean label/value pairs (e.g. "Power": "300W", "Weight": "4.2 kg", "DMX Channels": "16").
-- If the details are sparse, infer sensible, realistic professional specs for this kind of product.
-- Provide between 4 and 8 spec rows. Keep values concise.`
+Write:
+- tagline: a short, punchy 4-8 word headline.
+- marketingCopy: 2 short paragraphs (max ~90 words total) describing the product in action at live events. Confident, vivid, benefit-led. Plain text, no markdown.
+- specItems: extract concrete technical specs into clean label/value pairs (e.g. "Power": "300W", "Weight": "4.2 kg", "DMX Channels": "16"). If details are sparse, infer sensible, realistic professional specs. Provide between 4 and 8 rows with concise values.`
 
   try {
-    const res = await fetch(GATEWAY_URL, {
-      method: "POST",
-      headers: { Authorization: authHeader(), "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: TEXT_MODEL,
-        messages: [
-          { role: "system", content: system },
-          { role: "user", content: user },
-        ],
-        temperature: 0.7,
-        response_format: { type: "json_object" },
-      }),
+    const { object } = await generateObject({
+      model: TEXT_MODEL,
+      schema: copySchema,
+      system,
+      prompt,
+      temperature: 0.7,
     })
 
-    if (!res.ok) {
-      const detail = await res.text().catch(() => "")
-      throw new Error(`AI Gateway text error ${res.status}: ${detail.slice(0, 300)}`)
-    }
-
-    const json = await res.json()
-    const content: string = json?.choices?.[0]?.message?.content ?? ""
-    const parsed = safeParseJson(content)
-
-    const specItems: SpecItem[] = Array.isArray(parsed?.specItems)
-      ? parsed.specItems
-          .map((s: any) => ({ label: String(s?.label ?? "").trim(), value: String(s?.value ?? "").trim() }))
-          .filter((s: SpecItem) => s.label && s.value)
-          .slice(0, 8)
-      : []
+    const specItems: SpecItem[] = (object.specItems ?? [])
+      .map((s) => ({ label: String(s?.label ?? "").trim(), value: String(s?.value ?? "").trim() }))
+      .filter((s) => s.label && s.value)
+      .slice(0, 8)
 
     return {
-      tagline: String(parsed?.tagline ?? "").trim() || "Professional-grade event production",
+      tagline: object.tagline?.trim() || "Professional-grade event production",
       marketingCopy:
-        String(parsed?.marketingCopy ?? "").trim() ||
+        object.marketingCopy?.trim() ||
         "Engineered for demanding live events, this product delivers reliable, standout performance every time.",
       specItems: specItems.length ? specItems : fallbackSpecs(specifications),
     }
   } catch (err) {
     console.error("[v0] generateMarketingCopy failed:", err instanceof Error ? err.message : err)
-    // Deterministic fallback so the brochure still generates.
     return {
       tagline: "Professional-grade event production",
       marketingCopy:
@@ -115,7 +97,6 @@ Rules for specItems:
 }
 
 function fallbackSpecs(specifications: string): SpecItem[] {
-  // Turn free-text lines like "Power: 300W" into rows; otherwise a single note row.
   const rows: SpecItem[] = []
   for (const raw of (specifications || "").split(/\n+/)) {
     const line = raw.trim()
@@ -127,90 +108,109 @@ function fallbackSpecs(specifications: string): SpecItem[] {
   return rows
 }
 
-function safeParseJson(text: string): any {
-  if (!text) return {}
-  try {
-    return JSON.parse(text)
-  } catch {
-    // Strip code fences / extract first {...} block if the model wrapped it.
-    const match = text.match(/\{[\s\S]*\}/)
-    if (match) {
-      try {
-        return JSON.parse(match[0])
-      } catch {
-        /* ignore */
-      }
-    }
-    return {}
-  }
-}
-
 /* ------------------------------------------------------------------ */
-/* Event-action image generation (Nano Banana)                         */
+/* Event-action image generation (Gemini image / "Nano Banana")        */
 /* ------------------------------------------------------------------ */
 
-const IMAGE_PROMPTS = [
-  "Re-render this exact product as a dramatic hero shot at a live event: on a large stage during a concert or gala, " +
-    "high-contrast cinematic lighting, vivid colored beams, atmospheric haze, crowd bokeh in the background. " +
-    "Keep the product's real design, shape and branding faithful. Ultra-detailed, professional event photography, 4k.",
-  "Show this exact product in action at an elegant wedding reception: warm ambient uplighting, tasteful decor, " +
-    "guests softly blurred in the background. Faithful to the real product design. Professional photography, high detail.",
-  "Show this exact product at a high-energy corporate event or festival: bold stage lighting, LED walls glowing, " +
-    "dynamic beams and haze. Faithful to the real product design. Professional event photography, high contrast, 4k.",
+/** Real-world event scenarios the owner wants to showcase the fixtures in. */
+const EVENT_SCENES = [
+  "an upscale real-estate showing of a high-end modern home at dusk — the fixtures wash the architecture, entryway and landscaping in rich, saturated color",
+  "a lively backyard BBQ / house party at night — warm ambience plus the fixtures throwing vibrant colored uplight across the fence, trees and patio, guests softly blurred",
+  "a sleek car show at night — polished luxury cars with the fixtures casting dramatic colored beams across the floor and back wall",
+  "an elegant wedding reception in a ballroom — the fixtures uplighting the walls and draping in tasteful color, tables and guests softly blurred",
+  "a high-energy concert / live-event stage — bold colored beams cutting through atmospheric haze with crowd bokeh in the background",
 ]
 
-/**
- * Generates up to `count` event-action images from reference photos.
- * Returns data URLs. Returns [] if image generation is unavailable.
- */
-export async function generateEventImages(
-  productName: string,
-  refImages: RefImage[],
-  count: number,
-): Promise<string[]> {
+function scenePrompt(productName: string, scene: string, hasRefs: boolean): string {
+  const faithful = hasRefs
+    ? "Keep the fixture faithful to the real product design, shape and finish shown in the reference photo(s). "
+    : ""
+  return (
+    `Ultra-realistic professional event photography. Show the ${productName || "event lighting fixture"} ` +
+    `in action at ${scene}. The fixture(s) should be clearly visible as the source of the light. ` +
+    faithful +
+    "Cinematic, vivid colored lighting, atmospheric depth, high dynamic range, sharp detail, 4k. " +
+    "Photograph only — absolutely no text, captions, logos or watermarks."
+  )
+}
+
+function filesToDataUrls(files: Array<{ mediaType?: string; uint8Array?: Uint8Array }>): string[] {
   const out: string[] = []
-  for (let i = 0; i < count; i++) {
-    const prompt =
-      `Product: ${productName || "event equipment"}. ` + IMAGE_PROMPTS[i % IMAGE_PROMPTS.length]
-    try {
-      const url = await generateOneImage(prompt, refImages)
-      if (url) out.push(url)
-    } catch (err) {
-      console.error("[v0] generateEventImages failed:", err instanceof Error ? err.message : err)
-      // Stop trying on the first hard failure (e.g. no credits) — caller falls back.
-      break
+  for (const f of files ?? []) {
+    if (f?.mediaType?.startsWith("image/") && f.uint8Array?.length) {
+      const b64 = Buffer.from(f.uint8Array).toString("base64")
+      out.push(`data:${f.mediaType};base64,${b64}`)
     }
   }
   return out
 }
 
 async function generateOneImage(prompt: string, refImages: RefImage[]): Promise<string | null> {
-  const content: any[] = [{ type: "text", text: prompt }]
+  const content: Array<{ type: "text"; text: string } | { type: "image"; image: string }> = [
+    { type: "text", text: prompt },
+  ]
   for (const img of refImages.slice(0, 3)) {
-    content.push({ type: "image_url", image_url: { url: img.dataUrl } })
+    content.push({ type: "image", image: img.dataUrl })
   }
 
-  const res = await fetch(GATEWAY_URL, {
-    method: "POST",
-    headers: { Authorization: authHeader(), "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model: IMAGE_MODEL,
-      messages: [{ role: "user", content }],
-    }),
+  const result = await generateText({
+    model: IMAGE_MODEL,
+    messages: [{ role: "user", content }],
   })
 
-  if (!res.ok) {
-    const detail = await res.text().catch(() => "")
-    throw new Error(`AI Gateway image error ${res.status}: ${detail.slice(0, 200)}`)
-  }
+  const urls = filesToDataUrls(result.files as any)
+  return urls[0] ?? null
+}
 
-  const json = await res.json()
-  const message = json?.choices?.[0]?.message
-  // The gateway returns generated images on message.images[].image_url.url as data URLs.
-  const images = message?.images
-  if (Array.isArray(images) && images.length) {
-    const url = images[0]?.image_url?.url ?? images[0]?.url
-    if (typeof url === "string" && url.startsWith("data:")) return url
+/**
+ * Generates `count` distinct event-action images. Uses reference photos (when
+ * provided) so the fixture stays faithful. Runs in parallel and returns the
+ * data URLs that succeeded — an empty array means generation is unavailable.
+ */
+export async function generateEventImages(
+  productName: string,
+  refImages: RefImage[],
+  count: number,
+): Promise<string[]> {
+  const scenes = Array.from({ length: count }, (_, i) => EVENT_SCENES[i % EVENT_SCENES.length])
+  const hasRefs = refImages.length > 0
+
+  const settled = await Promise.allSettled(
+    scenes.map((scene) => generateOneImage(scenePrompt(productName, scene, hasRefs), refImages)),
+  )
+
+  const out: string[] = []
+  for (const r of settled) {
+    if (r.status === "fulfilled" && r.value) out.push(r.value)
+    else if (r.status === "rejected") {
+      console.error("[v0] generateEventImages scene failed:", r.reason instanceof Error ? r.reason.message : r.reason)
+    }
   }
-  return null
+  return out
+}
+
+/**
+ * Generates a clean studio hero shot of the fixture on a seamless black
+ * background — used when the owner hasn't uploaded a product photo to use as
+ * the hero. Returns a data URL or null when unavailable.
+ */
+export async function generateStudioHero(
+  productName: string,
+  refImages: RefImage[],
+): Promise<string | null> {
+  const hasRefs = refImages.length > 0
+  const faithful = hasRefs
+    ? "Faithfully match the real product design, shape and finish shown in the reference photo(s). "
+    : ""
+  const prompt =
+    `Clean professional studio product photograph of the ${productName || "event lighting fixture"}, ` +
+    "centered on a seamless dark charcoal-to-black background, soft even catalog lighting, subtle reflection, " +
+    faithful +
+    "crisp focus, high detail, 4k. Photograph only — no text, logos or watermarks."
+  try {
+    return await generateOneImage(prompt, refImages)
+  } catch (err) {
+    console.error("[v0] generateStudioHero failed:", err instanceof Error ? err.message : err)
+    return null
+  }
 }
