@@ -312,8 +312,8 @@ export function DataSheetClient({ initialSaved }: { initialSaved: DataSheetRecor
           {result && !result.aiImages && result.heroImageUrl && (
             <p className="flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-300">
               <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-              AI event-image generation isn&apos;t enabled on your plan yet, so your uploaded photos were used. Add AI
-              Gateway credits to auto-generate cinematic &ldquo;in action&rdquo; shots.
+              We couldn&apos;t generate the cinematic &ldquo;in action&rdquo; event shots this time, so your uploaded
+              photos were used instead. Try generating again in a moment.
             </p>
           )}
         </div>

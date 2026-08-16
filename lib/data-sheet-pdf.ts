@@ -6,6 +6,7 @@ import { PDFDocument, StandardFonts, rgb, type PDFFont, type PDFImage } from "pd
 /* Brand palette — mirrors the Quote/Invoice PDFs (dark navy + #8c52ff purple) */
 const BRAND = rgb(0.549, 0.322, 1) // #8c52ff
 const BRAND_DK = rgb(0.42, 0.23, 0.8)
+const BRAND_LT = rgb(0.78, 0.72, 1)
 const NAVY = rgb(0.055, 0.086, 0.157) // #0e1628 header/footer band
 const INK = rgb(0.106, 0.145, 0.204)
 const MUTED = rgb(0.42, 0.47, 0.54)
@@ -17,8 +18,15 @@ const WHITE = rgb(1, 1, 1)
 const PAGE_W = 612
 const PAGE_H = 792
 const MARGIN = 54
+const CONTENT_W = PAGE_W - 2 * MARGIN
 const HEADER_H = 118
 const FOOTER_H = 42
+const CONTENT_BOTTOM = FOOTER_H + 40 // keep clear of the footer band
+
+/* Consistent vertical rhythm */
+const SECTION_GAP = 26 // between major sections
+const LABEL_GAP = 14 // between a section label and its content
+const LINE_H = 14 // body line height
 
 export type DataSheetImage = {
   /** raw bytes of the image */
@@ -125,8 +133,8 @@ export async function generateDataSheetPdf(input: DataSheetPdfInput): Promise<Ui
       })
     }
 
-    rightText("DATA SHEET", PAGE_W - MARGIN, PAGE_H - 52, { size: 24, font: bold, color: BRAND })
-    rightText(`Issued: ${input.issuedDate}`, PAGE_W - MARGIN, PAGE_H - 72, {
+    rightText("DATA SHEET", PAGE_W - MARGIN, PAGE_H - 56, { size: 24, font: bold, color: BRAND })
+    rightText(`Issued: ${input.issuedDate}`, PAGE_W - MARGIN, PAGE_H - 76, {
       size: 9.5,
       color: rgb(0.72, 0.75, 0.83),
     })
@@ -134,153 +142,162 @@ export async function generateDataSheetPdf(input: DataSheetPdfInput): Promise<Ui
 
   const startPage = () => {
     drawHeaderBand()
-    y = PAGE_H - HEADER_H - 34
+    y = PAGE_H - HEADER_H - 36
+  }
+
+  const newPage = () => {
+    page = doc.addPage([PAGE_W, PAGE_H])
+    startPage()
   }
 
   const ensureSpace = (needed: number) => {
-    if (y - needed < FOOTER_H + 48) {
-      page = doc.addPage([PAGE_W, PAGE_H])
-      startPage()
-    }
+    if (y - needed < CONTENT_BOTTOM) newPage()
+  }
+
+  /** Small purple section label (e.g. OVERVIEW) with consistent spacing. */
+  const sectionLabel = (label: string) => {
+    ensureSpace(LABEL_GAP + 24)
+    text(label.toUpperCase(), MARGIN, y, { size: 8.5, font: bold, color: BRAND })
+    y -= LABEL_GAP
   }
 
   startPage()
 
   /* ---- Product title + tagline ---- */
-  for (const ln of wrapText(input.productName || "Product", bold, 22, PAGE_W - 2 * MARGIN)) {
+  for (const ln of wrapText(input.productName || "Product", bold, 22, CONTENT_W)) {
     ensureSpace(28)
     text(ln, MARGIN, y, { size: 22, font: bold, color: INK })
-    y -= 26
+    y -= 27
   }
   if (input.tagline) {
     y -= 2
-    for (const ln of wrapText(input.tagline, font, 12, PAGE_W - 2 * MARGIN)) {
-      ensureSpace(16)
+    for (const ln of wrapText(input.tagline, font, 12, CONTENT_W)) {
+      ensureSpace(17)
       text(ln, MARGIN, y, { size: 12, font, color: BRAND })
-      y -= 16
+      y -= 17
     }
   }
-  y -= 10
+  y -= SECTION_GAP - 6
 
   /* ---- Hero image ---- */
   if (heroImg) {
-    const maxW = PAGE_W - 2 * MARGIN
-    const heroH = 230
-    const scale = Math.min(maxW / heroImg.width, heroH / heroImg.height)
+    const heroH = 236
+    const scale = Math.min(CONTENT_W / heroImg.width, heroH / heroImg.height)
     const w = heroImg.width * scale
     const h = heroImg.height * scale
-    ensureSpace(h + 16)
-    const x = MARGIN + (maxW - w) / 2
-    // Soft framing background band behind the hero.
-    page.drawRectangle({ x: MARGIN, y: y - h - 6, width: maxW, height: h + 12, color: TINT })
-    page.drawImage(heroImg, { x, y: y - h, width: w, height: h })
+    ensureSpace(h + 12)
+    const x = MARGIN + (CONTENT_W - w) / 2
+    // Soft framing band behind the hero + purple accent rule.
+    page.drawRectangle({ x: MARGIN, y: y - h - 6, width: CONTENT_W, height: h + 12, color: TINT })
     page.drawRectangle({ x: MARGIN, y: y - h - 6, width: 4, height: h + 12, color: BRAND })
-    y -= h + 22
+    page.drawImage(heroImg, { x, y: y - h, width: w, height: h })
+    y -= h + SECTION_GAP
   }
 
   /* ---- Marketing copy ---- */
   if (input.marketingCopy) {
-    ensureSpace(30)
-    text("OVERVIEW", MARGIN, y, { size: 8, font: bold, color: BRAND })
-    y -= 16
-    for (const para of input.marketingCopy.split(/\n{2,}|\n/)) {
-      if (!para.trim()) {
-        y -= 6
-        continue
-      }
-      for (const ln of wrapText(para.trim(), font, 10, PAGE_W - 2 * MARGIN)) {
-        ensureSpace(14)
+    sectionLabel("Overview")
+    const paras = input.marketingCopy.split(/\n{2,}|\n/)
+    for (let p = 0; p < paras.length; p++) {
+      const para = paras[p].trim()
+      if (!para) continue
+      for (const ln of wrapText(para, font, 10, CONTENT_W)) {
+        ensureSpace(LINE_H)
         text(ln, MARGIN, y, { size: 10, color: INK })
-        y -= 14
+        y -= LINE_H
       }
-      y -= 6
+      if (p < paras.length - 1) y -= 6
     }
-    y -= 6
+    y -= SECTION_GAP
   }
 
   /* ---- Specifications table ---- */
   if (input.specItems.length) {
-    ensureSpace(40)
-    text("SPECIFICATIONS", MARGIN, y, { size: 8, font: bold, color: BRAND })
-    y -= 14
+    sectionLabel("Specifications")
 
-    const tableX = MARGIN - 10
-    const tableW = PAGE_W - 2 * MARGIN + 20
-    const labelX = MARGIN
-    const valueX = PAGE_W / 2 + 6
+    const tableX = MARGIN
+    const tableW = CONTENT_W
+    const labelX = tableX + 14
+    const valueX = tableX + tableW * 0.46
+    const labelColW = valueX - labelX - 12
+    const valueColW = tableX + tableW - valueX - 14
+    const HEADER_ROW_H = 24
+    const ROW_PAD = 9
 
-    // Header row
-    page.drawRectangle({ x: tableX, y: y - 7, width: tableW, height: 24, color: NAVY })
-    text("SPECIFICATION", labelX, y + 1, { size: 8, font: bold, color: WHITE })
-    text("DETAIL", valueX, y + 1, { size: 8, font: bold, color: rgb(0.78, 0.72, 1) })
-    y -= 30
+    const drawTableHeader = () => {
+      // Band sits directly below the current cursor; text vertically centered.
+      page.drawRectangle({ x: tableX, y: y - HEADER_ROW_H, width: tableW, height: HEADER_ROW_H, color: NAVY })
+      text("SPECIFICATION", labelX, y - 16, { size: 8, font: bold, color: WHITE })
+      text("DETAIL", valueX, y - 16, { size: 8, font: bold, color: BRAND_LT })
+      y -= HEADER_ROW_H
+    }
+
+    ensureSpace(HEADER_ROW_H + 40)
+    drawTableHeader()
 
     let zebra = false
     for (const spec of input.specItems) {
-      const valueLines = wrapText(spec.value, font, 10, PAGE_W - MARGIN - valueX)
-      const labelLines = wrapText(spec.label, bold, 10, valueX - labelX - 10)
-      const rows = Math.max(valueLines.length, labelLines.length)
-      const rowH = 8 + rows * 13
+      const labelLines = wrapText(spec.label, bold, 10, labelColW)
+      const valueLines = wrapText(spec.value, font, 10, valueColW)
+      const rows = Math.max(labelLines.length, valueLines.length)
+      const rowH = ROW_PAD * 2 + (rows - 1) * 13 + 2
 
-      if (y - rowH < FOOTER_H + 48) {
-        page = doc.addPage([PAGE_W, PAGE_H])
-        startPage()
-        page.drawRectangle({ x: tableX, y: y - 7, width: tableW, height: 24, color: NAVY })
-        text("SPECIFICATION", labelX, y + 1, { size: 8, font: bold, color: WHITE })
-        text("DETAIL", valueX, y + 1, { size: 8, font: bold, color: rgb(0.78, 0.72, 1) })
-        y -= 30
+      // Page break carries the table header over.
+      if (y - rowH < CONTENT_BOTTOM) {
+        newPage()
+        drawTableHeader()
       }
 
+      const rowTop = y
       if (zebra) {
-        page.drawRectangle({ x: tableX, y: y - (rowH - 14), width: tableW, height: rowH, color: ZEBRA })
+        page.drawRectangle({ x: tableX, y: rowTop - rowH, width: tableW, height: rowH, color: ZEBRA })
       }
       zebra = !zebra
 
-      let ly = y
+      let ly = rowTop - ROW_PAD - 4
       for (const ln of labelLines) {
         text(ln, labelX, ly, { size: 10, font: bold, color: INK })
         ly -= 13
       }
-      let vy = y
+      let vy = rowTop - ROW_PAD - 4
       for (const ln of valueLines) {
-        text(ln, valueX, vy, { size: 10, color: INK })
+        text(ln, valueX, vy, { size: 10, color: MUTED })
         vy -= 13
       }
-      y -= rowH
+
+      y = rowTop - rowH
       page.drawLine({
-        start: { x: tableX, y: y + 6 },
-        end: { x: tableX + tableW, y: y + 6 },
-        thickness: 0.5,
+        start: { x: tableX, y },
+        end: { x: tableX + tableW, y },
+        thickness: 0.75,
         color: LINE,
       })
-      y -= 4
     }
-    y -= 10
+    y -= SECTION_GAP
   }
 
   /* ---- Gallery: product in action ---- */
   if (galleryImgs.length) {
-    ensureSpace(30)
-    text("IN ACTION", MARGIN, y, { size: 8, font: bold, color: BRAND })
-    y -= 16
+    sectionLabel("In Action")
 
     const gap = 12
-    const cols = Math.min(galleryImgs.length, 2)
-    const cellW = (PAGE_W - 2 * MARGIN - gap * (cols - 1)) / cols
-    const cellH = 120
+    const cols = 2
+    const cellW = (CONTENT_W - gap * (cols - 1)) / cols
+    const cellH = 132
 
-    // Lay out in rows of `cols`.
     for (let i = 0; i < galleryImgs.length; i += cols) {
-      ensureSpace(cellH + 12)
+      ensureSpace(cellH + gap)
       const rowImgs = galleryImgs.slice(i, i + cols)
       rowImgs.forEach((img, idx) => {
+        const cellX = MARGIN + idx * (cellW + gap)
+        const cellTop = y
+        // Framed tile.
+        page.drawRectangle({ x: cellX, y: cellTop - cellH, width: cellW, height: cellH, color: TINT })
         const scale = Math.min(cellW / img.width, cellH / img.height)
         const w = img.width * scale
         const h = img.height * scale
-        const cellX = MARGIN + idx * (cellW + gap)
         const x = cellX + (cellW - w) / 2
-        const imgY = y - cellH + (cellH - h) / 2
-        page.drawRectangle({ x: cellX, y: y - cellH, width: cellW, height: cellH, color: TINT })
+        const imgY = cellTop - cellH + (cellH - h) / 2
         page.drawImage(img, { x, y: imgY, width: w, height: h })
       })
       y -= cellH + gap

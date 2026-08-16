@@ -2,12 +2,18 @@
 
 import { createClient as createServerClient } from "@/lib/supabase/server"
 import { createAdminClient } from "@/lib/supabase/admin"
-import { generateMarketingCopy, generateEventImages, type RefImage, type SpecItem } from "@/lib/data-sheet-ai"
+import {
+  generateMarketingCopy,
+  generateEventImages,
+  generateStudioHero,
+  type RefImage,
+  type SpecItem,
+} from "@/lib/data-sheet-ai"
 import { generateDataSheetPdf, type DataSheetImage } from "@/lib/data-sheet-pdf"
 
 const BUCKET = "data-sheets"
 const MAX_REF_IMAGES = 5
-const GALLERY_COUNT = 3 // 1 hero + 2 gallery
+const ACTION_SHOT_COUNT = 4 // AI-generated "in action" event shots
 
 export type DataSheetRecord = {
   id: string
@@ -102,26 +108,26 @@ export async function generateDataSheet(input: GenerateInput): Promise<GenerateR
       .filter((u) => typeof u === "string" && u.startsWith("data:image/"))
       .map((dataUrl) => ({ dataUrl }))
 
-    // 1) Marketing copy + structured specs (Gemini).
-    const copy = await generateMarketingCopy(productName, specifications)
+    // 1) Marketing copy + structured specs, and event/hero imagery — in parallel.
+    //    Hero: the owner's first uploaded product photo when available, otherwise
+    //    an AI-generated clean studio shot. Gallery: AI-generated "in action"
+    //    event shots (real-estate, backyard party, car show, wedding, concert…).
+    const [copy, actionShots, generatedHero] = await Promise.all([
+      generateMarketingCopy(productName, specifications),
+      generateEventImages(productName, refImages, ACTION_SHOT_COUNT),
+      refImages.length ? Promise.resolve<string | null>(null) : generateStudioHero(productName, refImages),
+    ])
 
-    // 2) Event-action images (Nano Banana). Falls back to owner uploads when
-    //    image generation is unavailable (e.g. no AI Gateway credits).
-    let aiImages = false
-    let imageDataUrls: string[] = []
-    if (refImages.length) {
-      const generated = await generateEventImages(productName, refImages, GALLERY_COUNT)
-      if (generated.length) {
-        aiImages = true
-        imageDataUrls = generated
-      } else {
-        // Fallback: use the owner's uploaded photos directly.
-        imageDataUrls = refImages.map((r) => r.dataUrl).slice(0, GALLERY_COUNT)
-      }
-    }
+    const aiImages = actionShots.length > 0
+
+    // Assemble ordered image list: [hero, ...action shots].
+    const heroDataUrl = refImages[0]?.dataUrl ?? generatedHero ?? null
+    const orderedDataUrls: string[] = []
+    if (heroDataUrl) orderedDataUrls.push(heroDataUrl)
+    orderedDataUrls.push(...actionShots)
 
     // Convert image data URLs to raw bytes for the PDF + storage.
-    const images = imageDataUrls
+    const images = orderedDataUrls
       .map((u) => ({ dataUrl: u, img: dataUrlToImage(u) }))
       .filter((x): x is { dataUrl: string; img: DataSheetImage } => x.img !== null)
 
