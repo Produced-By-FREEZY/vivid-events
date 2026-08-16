@@ -4,15 +4,13 @@ import { headers } from "next/headers"
 import { revalidatePath } from "next/cache"
 import { createAdminClient } from "@/lib/supabase/admin"
 import { getStripe, isStripeConfigured } from "@/lib/stripe"
-import { generateQuotePdf, type PdfLine } from "@/lib/quote-pdf"
 import {
   isEmailConfigured,
-  renderPaidEmail,
   depositReleaseRequestEmail,
   bookingConfirmationEmail,
   sendMail,
 } from "@/lib/email"
-import { getPortalSettingsAdmin } from "@/app/portal/settings-actions"
+import { AUTHORIZED_STATUS, isSecured } from "@/lib/quote-status"
 
 const money = (n: number) => new Intl.NumberFormat("en-CA", { style: "currency", currency: "CAD" }).format(n)
 
@@ -73,7 +71,7 @@ export async function approveQuote(token: string, signatureName: string): Promis
   const admin = createAdminClient()
   const { data: quote, error } = await admin.from("quotes").select("*").eq("public_token", token).maybeSingle()
   if (error || !quote) return { success: false, error: "This quote could not be found." }
-  if (["paid", "invoiced"].includes(quote.status)) {
+  if (isSecured(quote.status)) {
     return { success: true, status: quote.status }
   }
 
@@ -105,7 +103,7 @@ export async function createQuoteCheckout(token: string): Promise<ActionResult> 
   const admin = createAdminClient()
   const { data: quote, error } = await admin.from("quotes").select("*").eq("public_token", token).maybeSingle()
   if (error || !quote) return { success: false, error: "This quote could not be found." }
-  if (["paid", "invoiced"].includes(quote.status)) return { success: false, error: "This quote is already paid." }
+  if (isSecured(quote.status)) return { success: false, error: "This quote is already confirmed." }
 
   const amount = payableAmount(quote)
   if (!(amount > 0)) return { success: false, error: "This quote has no payable amount." }
@@ -154,6 +152,10 @@ export async function createQuoteCheckout(token: string): Promise<ActionResult> 
         cancel_url: `${baseUrl}/quote/${token}?canceled=1`,
         metadata: { quote_id: quote.id, token, quote_number: quote.quote_number },
         payment_intent_data: {
+          // Authorize (place a hold on) the FULL rental + deposit without
+          // capturing. The rental is captured after the event, which releases
+          // the uncaptured deposit — so Stripe fees are only paid on what's kept.
+          capture_method: "manual",
           metadata: { quote_id: quote.id, token, quote_number: quote.quote_number },
         },
       },
@@ -170,9 +172,11 @@ export async function createQuoteCheckout(token: string): Promise<ActionResult> 
 }
 
 /**
- * Confirm payment on return from Stripe. Retrieves the session, and on success
- * converts the quote into a paid invoice, records the payer's real name from
- * Stripe, and emails the customer a paid-invoice PDF. Idempotent.
+ * Confirm the card authorization on return from Stripe. With manual capture the
+ * Checkout Session settles as an authorization (PaymentIntent = requires_capture),
+ * NOT a payment — the full rental + deposit is held on the card but nothing is
+ * captured yet. This records the hold, books the event, and emails booking
+ * confirmations. The rental is captured later, after the event. Idempotent.
  */
 export async function confirmQuotePayment(token: string, sessionId: string): Promise<ActionResult> {
   if (!isStripeConfigured()) return { success: false, error: "Payments are not set up." }
@@ -181,129 +185,69 @@ export async function confirmQuotePayment(token: string, sessionId: string): Pro
   const { data: quote, error } = await admin.from("quotes").select("*").eq("public_token", token).maybeSingle()
   if (error || !quote) return { success: false, error: "Quote not found." }
 
-  // Already converted — nothing to do.
-  if (["paid", "invoiced"].includes(quote.status) && quote.invoice_number) {
-    return { success: true, status: "paid" }
+  // Already confirmed (hold placed or captured) — nothing to do.
+  if (isSecured(quote.status) && quote.invoice_number) {
+    return { success: true, status: quote.status }
   }
 
   const stripe = getStripe()
   let session: any
   try {
     session = await stripe.checkout.sessions.retrieve(sessionId, {
-      expand: ["payment_intent", "payment_intent.latest_charge"],
+      expand: ["payment_intent"],
     })
   } catch (e) {
     console.error("[v0] confirmQuotePayment retrieve failed:", e instanceof Error ? e.message : e)
     return { success: false, error: "Could not verify payment." }
   }
 
-  // Guard: the session must belong to THIS quote and be paid.
+  // Guard: the session must belong to THIS quote.
   if (session.metadata?.quote_id !== quote.id) return { success: false, error: "Payment does not match this quote." }
-  if (session.payment_status !== "paid") return { success: false, error: "Payment is not complete yet." }
+
+  const paymentIntent = typeof session.payment_intent === "object" ? session.payment_intent : null
+  const piStatus: string | null = paymentIntent?.status ?? null
+
+  // With manual capture, a completed checkout leaves the PaymentIntent in
+  // "requires_capture" (the hold is placed). "succeeded" would mean it was
+  // already captured. Anything else means the customer hasn't finished.
+  const isAuthorizedHold = piStatus === "requires_capture"
+  const isAlreadyCaptured = piStatus === "succeeded" || session.payment_status === "paid"
+  if (!isAuthorizedHold && !isAlreadyCaptured) {
+    return { success: false, error: "Payment is not complete yet." }
+  }
 
   const payerName: string | null = session.customer_details?.name ?? null
-  const paymentIntent = typeof session.payment_intent === "object" ? session.payment_intent : null
-  const charge = paymentIntent && typeof paymentIntent.latest_charge === "object" ? paymentIntent.latest_charge : null
-  const receiptUrl: string | null = charge?.receipt_url ?? null
-  const amountPaid = (session.amount_total ?? 0) / 100
+  const authorizedAmount = (session.amount_total ?? paymentIntent?.amount ?? 0) / 100
 
-  // Generate a sequential invoice number.
+  // Generate a sequential invoice/booking number.
   const { data: invNum } = await admin.rpc("next_invoice_number")
   const invoiceNumber = (invNum as string) ?? `INV-${quote.quote_number}`
-  const paidAtIso = new Date().toISOString()
+  const nowIso = new Date().toISOString()
 
   const { error: updErr } = await admin
     .from("quotes")
     .update({
-      status: "paid",
-      paid_at: paidAtIso,
-      amount_paid: amountPaid,
-      approved_at: quote.approved_at ?? paidAtIso,
+      status: AUTHORIZED_STATUS,
+      authorized_at: nowIso,
+      authorized_amount: authorizedAmount,
+      approved_at: quote.approved_at ?? nowIso,
       approved_by_name: quote.approved_by_name ?? payerName,
       signature_name: quote.signature_name ?? payerName,
       invoice_number: invoiceNumber,
-      invoiced_at: paidAtIso,
+      invoiced_at: quote.invoiced_at ?? nowIso,
       stripe_payment_intent_id: paymentIntent?.id ?? null,
       stripe_checkout_session_id: session.id,
-      stripe_invoice_url: receiptUrl,
     })
     .eq("id", quote.id)
 
   if (updErr) {
     console.error("[v0] confirmQuotePayment update failed:", updErr.message)
-    return { success: false, error: "Payment received but we could not finalize the invoice." }
+    return { success: false, error: "Card authorized but we could not finalize the booking." }
   }
 
-  // Email a paid-invoice PDF (best-effort — payment is already recorded).
-  try {
-    if (isEmailConfigured()) {
-      const { data: items } = await admin
-        .from("quote_items")
-        .select("*")
-        .eq("quote_id", quote.id)
-        .order("sort_order", { ascending: true })
+  const paidAtIso = nowIso
 
-      const pdfLines: PdfLine[] = (items ?? []).map((it) => ({
-        name: it.name,
-        description: it.description,
-        quantity: Number(it.quantity),
-        unitPrice: Number(it.unit_price),
-        lineTotal: Number(it.line_total),
-        itemType: it.item_type,
-      }))
-
-      const settings = await getPortalSettingsAdmin()
-      const pdf = await generateQuotePdf({
-        kind: "invoice",
-        number: quote.quote_number,
-        invoiceNumber,
-        issuedDate: new Date().toLocaleDateString("en-CA"),
-        clientName: payerName || quote.client_name,
-        clientEmail: quote.client_email,
-        eventName: quote.event_name,
-        eventDate: quote.event_date,
-        eventTime: fmtTimeRange(quote.event_start_time, quote.event_end_time) || null,
-        eventAddress: quote.event_address,
-        items: pdfLines,
-        subtotal: Number(quote.subtotal),
-        taxRate: Number(quote.tax_rate),
-        taxAmount: Number(quote.tax_amount),
-        total: Number(quote.total),
-        depositTotal: effectiveDeposit(quote),
-        depositRequired: Boolean(quote.deposit_required),
-        amountDue: amountPaid,
-        paid: true,
-        paidAt: new Date(paidAtIso).toLocaleDateString("en-CA"),
-        terms: settings.quote_terms,
-      })
-
-      const { subject, html, text } = renderPaidEmail(
-        {
-          subject: settings.paid_email_subject,
-          body: settings.paid_email_body,
-          signerName: settings.signer_name,
-        },
-        {
-          first_name: firstNameOf(quote.client_name),
-          event_name: quote.event_name || "your event",
-          invoice_number: invoiceNumber,
-          receipt_link: receiptUrl ?? "",
-          signer_name: settings.signer_name,
-        },
-      )
-      await sendMail({
-        to: quote.client_email,
-        subject,
-        html,
-        text,
-        attachments: [{ filename: `Invoice-${invoiceNumber}.pdf`, content: pdf }],
-      })
-    }
-  } catch (e) {
-    console.error("[v0] confirmQuotePayment invoice email failed:", e instanceof Error ? e.message : e)
-  }
-
-  // Security deposit held → email the OWNER a one-click "release deposit" link.
+  // Security deposit held → email the OWNER a one-click "complete & release" link.
   const depositAmount = effectiveDeposit(quote)
   if (quote.deposit_required && depositAmount > 0) {
     try {
@@ -390,5 +334,5 @@ export async function confirmQuotePayment(token: string, sessionId: string): Pro
   revalidatePath("/portal/invoices")
   revalidatePath("/portal/dashboard")
   revalidatePath("/portal/calendar")
-  return { success: true, status: "paid" }
+  return { success: true, status: AUTHORIZED_STATUS }
 }
