@@ -2,7 +2,7 @@
 
 import { useState } from "react"
 import { useRouter } from "next/navigation"
-import { Send, Loader2, Check, FileText, Link2, ExternalLink, Trash2, ShieldCheck, RotateCcw } from "lucide-react"
+import { Send, Loader2, Check, FileText, Link2, ExternalLink, Trash2, ShieldCheck, CircleDollarSign } from "lucide-react"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -13,8 +13,9 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
-import { sendQuote, deleteQuote, refundDeposit } from "@/app/portal/quote-actions"
+import { sendQuote, deleteQuote, captureRental } from "@/app/portal/quote-actions"
 import type { QuoteRecord } from "@/app/portal/quote-actions"
+import { isAuthorized, isCollected, isSecured } from "@/lib/quote-status"
 
 /** Effective refundable deposit: owner override when set, otherwise summed per-line deposits. */
 const depositAmountOf = (q: QuoteRecord) =>
@@ -27,12 +28,16 @@ const statusStyles: Record<string, string> = {
   sent: "bg-[#8c52ff]/20 text-[#c4a7ff]",
   approved: "bg-amber-500/15 text-amber-300",
   accepted: "bg-emerald-500/15 text-emerald-300",
+  authorized: "bg-sky-500/15 text-sky-300",
+  completed_and_captured: "bg-emerald-500/20 text-emerald-300",
   paid: "bg-emerald-500/20 text-emerald-300",
   invoiced: "bg-emerald-500/20 text-emerald-300",
   declined: "bg-red-500/15 text-red-300",
 }
 
 const statusLabel: Record<string, string> = {
+  authorized: "Hold placed",
+  completed_and_captured: "Completed",
   paid: "Paid",
   invoiced: "Paid",
   approved: "Signed",
@@ -46,21 +51,39 @@ export function QuotesTable({ quotes }: { quotes: QuoteRecord[] }) {
   const [error, setError] = useState<string | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<QuoteRecord | null>(null)
   const [deleting, setDeleting] = useState(false)
-  const [refundTarget, setRefundTarget] = useState<QuoteRecord | null>(null)
-  const [refunding, setRefunding] = useState(false)
 
-  const handleRefund = async () => {
-    if (!refundTarget) return
-    setRefunding(true)
+  // Capture / completion dialog state.
+  const [captureTarget, setCaptureTarget] = useState<QuoteRecord | null>(null)
+  const [capturing, setCapturing] = useState(false)
+  const [keepDeposit, setKeepDeposit] = useState(false)
+  const [keepAmount, setKeepAmount] = useState<string>("")
+
+  const openCapture = (q: QuoteRecord) => {
     setError(null)
-    const result = await refundDeposit(refundTarget.id)
-    setRefunding(false)
+    setKeepDeposit(false)
+    setKeepAmount(String(depositAmountOf(q)))
+    setCaptureTarget(q)
+  }
+
+  const handleCapture = async () => {
+    if (!captureTarget) return
+    setCapturing(true)
+    setError(null)
+    const deposit = depositAmountOf(captureTarget)
+    const parsed = Number.parseFloat(keepAmount)
+    const depositCaptureAmount = keepDeposit
+      ? Number.isFinite(parsed)
+        ? Math.max(0, Math.min(parsed, deposit))
+        : deposit
+      : 0
+    const result = await captureRental(captureTarget.id, { depositCaptureAmount })
+    setCapturing(false)
     if (result.success) {
-      setRefundTarget(null)
+      setCaptureTarget(null)
       router.refresh()
     } else {
-      setError(result.error ?? "Could not refund the deposit.")
-      setRefundTarget(null)
+      setError(result.error ?? "Could not complete the rental.")
+      setCaptureTarget(null)
     }
   }
 
@@ -114,13 +137,15 @@ export function QuotesTable({ quotes }: { quotes: QuoteRecord[] }) {
     )
   }
 
+  const captureDeposit = captureTarget ? depositAmountOf(captureTarget) : 0
+
   return (
     <div className="space-y-3">
       {error && (
         <div className="rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-300">{error}</div>
       )}
       <div className="overflow-hidden rounded-2xl border border-slate-700/50 bg-slate-800/40">
-        <div className="hidden grid-cols-[110px_1fr_1fr_120px_100px_300px] gap-3 border-b border-slate-700/50 px-5 py-3 text-xs font-medium uppercase tracking-wide text-slate-400 md:grid">
+        <div className="hidden grid-cols-[110px_1fr_1fr_120px_110px_300px] gap-3 border-b border-slate-700/50 px-5 py-3 text-xs font-medium uppercase tracking-wide text-slate-400 md:grid">
           <span>Quote</span>
           <span>Client</span>
           <span>Event</span>
@@ -130,15 +155,24 @@ export function QuotesTable({ quotes }: { quotes: QuoteRecord[] }) {
         </div>
         <div className="divide-y divide-slate-700/50">
           {quotes.map((q) => {
-            const isPaid = q.status === "paid" || q.status === "invoiced"
+            const secured = isSecured(q.status)
+            const deposit = depositAmountOf(q)
+            const hasDeposit = q.deposit_required && deposit > 0
+            const completed = Boolean(q.captured_at || q.deposit_refunded_at)
+            // A hold is placed (authorized) and awaiting completion, OR a legacy
+            // fully-charged quote whose deposit hasn't been released yet.
+            const needsCompletion =
+              !completed && (isAuthorized(q.status) || (isCollected(q.status) && hasDeposit))
+            const depositKept = Number(q.deposit_captured_amount ?? 0)
+            const depositReleased = Number(q.deposit_released_amount ?? q.deposit_refund_amount ?? 0)
             return (
               <div
                 key={q.id}
-                className="grid grid-cols-2 gap-3 px-5 py-4 text-sm md:grid-cols-[110px_1fr_1fr_120px_100px_300px] md:items-center"
+                className="grid grid-cols-2 gap-3 px-5 py-4 text-sm md:grid-cols-[110px_1fr_1fr_120px_110px_300px] md:items-center"
               >
                 <span className="min-w-0">
                   <span className="block font-semibold text-white">{q.quote_number}</span>
-                  {isPaid && q.invoice_number && (
+                  {secured && q.invoice_number && (
                     <span className="block truncate text-xs text-emerald-400">{q.invoice_number}</span>
                   )}
                 </span>
@@ -149,9 +183,10 @@ export function QuotesTable({ quotes }: { quotes: QuoteRecord[] }) {
                 <span className="min-w-0 truncate text-slate-400">{q.event_name ?? "—"}</span>
                 <span className="font-semibold text-white md:text-right">
                   {money(Number(q.total))}
-                  {q.deposit_required && Number(q.deposit_total) > 0 && (
+                  {hasDeposit && (
                     <span className="block text-xs font-normal text-slate-500">
-                      +{money(Number(q.deposit_total))} dep.
+                      {isAuthorized(q.status) ? "+" : ""}
+                      {money(deposit)} dep.
                     </span>
                   )}
                 </span>
@@ -188,7 +223,7 @@ export function QuotesTable({ quotes }: { quotes: QuoteRecord[] }) {
                       </a>
                     </>
                   )}
-                  {!isPaid && (
+                  {!secured && (
                     <>
                       <button
                         onClick={() => handleSend(q.id, "send")}
@@ -222,28 +257,30 @@ export function QuotesTable({ quotes }: { quotes: QuoteRecord[] }) {
                       </button>
                     </>
                   )}
-                  {isPaid && q.deposit_required && depositAmountOf(q) > 0 && (
-                    q.deposit_refunded_at ? (
-                      <span
-                        title={`Deposit of ${money(depositAmountOf(q))} returned`}
-                        className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-1.5 text-xs font-medium text-emerald-300"
-                      >
-                        <ShieldCheck className="h-3.5 w-3.5" />
-                        Deposit returned
-                      </span>
-                    ) : (
-                      <button
-                        onClick={() => {
-                          setError(null)
-                          setRefundTarget(q)
-                        }}
-                        title="Return the security deposit to the customer"
-                        className="inline-flex items-center gap-1.5 rounded-lg border border-[#8c52ff]/40 bg-[#8c52ff]/10 px-2.5 py-1.5 text-xs font-medium text-[#c4a7ff] transition-colors hover:border-[#8c52ff]/70 hover:bg-[#8c52ff]/20 hover:text-white disabled:opacity-60"
-                      >
-                        <RotateCcw className="h-3.5 w-3.5" />
-                        Refund deposit
-                      </button>
-                    )
+                  {needsCompletion && (
+                    <button
+                      onClick={() => openCapture(q)}
+                      title="Charge the rental now that the event is done (releases the deposit hold)"
+                      className="inline-flex items-center gap-1.5 rounded-lg border border-[#8c52ff]/40 bg-[#8c52ff]/10 px-2.5 py-1.5 text-xs font-medium text-[#c4a7ff] transition-colors hover:border-[#8c52ff]/70 hover:bg-[#8c52ff]/20 hover:text-white"
+                    >
+                      <CircleDollarSign className="h-3.5 w-3.5" />
+                      Complete rental
+                    </button>
+                  )}
+                  {completed && (
+                    <span
+                      title={
+                        depositKept > 0
+                          ? `${money(depositKept)} of the deposit was kept for damages`
+                          : hasDeposit
+                            ? `Deposit of ${money(depositReleased || deposit)} released`
+                            : "Rental completed"
+                      }
+                      className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-1.5 text-xs font-medium text-emerald-300"
+                    >
+                      <ShieldCheck className="h-3.5 w-3.5" />
+                      {depositKept > 0 ? `Kept ${money(depositKept)}` : hasDeposit ? "Deposit released" : "Completed"}
+                    </span>
                   )}
                   <button
                     onClick={() => {
@@ -292,20 +329,69 @@ export function QuotesTable({ quotes }: { quotes: QuoteRecord[] }) {
         </AlertDialogContent>
       </AlertDialog>
 
-      <AlertDialog open={!!refundTarget} onOpenChange={(o) => !o && setRefundTarget(null)}>
+      <AlertDialog open={!!captureTarget} onOpenChange={(o) => !o && setCaptureTarget(null)}>
         <AlertDialogContent className="border-slate-700 bg-slate-900 text-white">
           <AlertDialogHeader>
             <AlertDialogTitle className="flex items-center gap-2">
-              <ShieldCheck className="h-5 w-5 text-[#c4a7ff]" />
-              Refund the security deposit?
+              <CircleDollarSign className="h-5 w-5 text-[#c4a7ff]" />
+              Complete this rental?
             </AlertDialogTitle>
             <AlertDialogDescription className="text-slate-400">
-              This returns <span className="font-semibold text-white">{refundTarget ? money(depositAmountOf(refundTarget)) : ""}</span>{" "}
-              to {refundTarget?.client_name} via Stripe against their original payment for{" "}
-              {refundTarget?.invoice_number ?? refundTarget?.quote_number}. Only do this once the invoice has been
-              reviewed and all equipment is back. The quoted total stays collected.
+              This charges the{" "}
+              <span className="font-semibold text-white">
+                {captureTarget ? money(Number(captureTarget.total)) : ""}
+              </span>{" "}
+              rental for {captureTarget?.invoice_number ?? captureTarget?.quote_number}.
+              {captureDeposit > 0 && (
+                <>
+                  {" "}
+                  The <span className="font-semibold text-white">{money(captureDeposit)}</span> security deposit hold is
+                  released back to {captureTarget?.client_name} automatically — no refund fees.
+                </>
+              )}{" "}
+              Only do this once the event is over and all equipment is back.
             </AlertDialogDescription>
           </AlertDialogHeader>
+
+          {captureDeposit > 0 && (
+            <div className="rounded-xl border border-slate-700/60 bg-slate-800/40 p-4">
+              <label className="flex items-start gap-3 text-sm text-slate-200">
+                <input
+                  type="checkbox"
+                  checked={keepDeposit}
+                  onChange={(e) => setKeepDeposit(e.target.checked)}
+                  className="mt-0.5 h-4 w-4 accent-[#8c52ff]"
+                />
+                <span>
+                  <span className="font-medium">Keep part of the deposit for damages</span>
+                  <span className="mt-0.5 block text-xs text-slate-400">
+                    Charge some of the {money(captureDeposit)} deposit instead of releasing all of it.
+                  </span>
+                </span>
+              </label>
+              {keepDeposit && (
+                <div className="mt-3 flex items-center gap-2">
+                  <span className="text-sm text-slate-400">Keep</span>
+                  <div className="relative">
+                    <span className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-sm text-slate-500">
+                      $
+                    </span>
+                    <input
+                      type="number"
+                      min={0}
+                      max={captureDeposit}
+                      step="0.01"
+                      value={keepAmount}
+                      onChange={(e) => setKeepAmount(e.target.value)}
+                      className="w-32 rounded-lg border border-slate-700 bg-slate-900/60 py-1.5 pl-6 pr-2.5 text-sm text-white outline-none focus:border-[#8c52ff]"
+                    />
+                  </div>
+                  <span className="text-xs text-slate-500">of {money(captureDeposit)}</span>
+                </div>
+              )}
+            </div>
+          )}
+
           <AlertDialogFooter>
             <AlertDialogCancel className="border-slate-700 bg-transparent text-slate-300 hover:bg-slate-800 hover:text-white">
               Cancel
@@ -313,12 +399,12 @@ export function QuotesTable({ quotes }: { quotes: QuoteRecord[] }) {
             <AlertDialogAction
               onClick={(e) => {
                 e.preventDefault()
-                handleRefund()
+                handleCapture()
               }}
-              disabled={refunding}
+              disabled={capturing}
               className="bg-[#8c52ff] text-white hover:bg-[#7a45e6]"
             >
-              {refunding ? <Loader2 className="h-4 w-4 animate-spin" /> : "Refund deposit"}
+              {capturing ? <Loader2 className="h-4 w-4 animate-spin" /> : "Complete rental"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

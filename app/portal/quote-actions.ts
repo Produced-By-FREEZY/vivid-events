@@ -4,10 +4,11 @@ import { revalidatePath } from "next/cache"
 import { headers } from "next/headers"
 import { createClient as createServerClient } from "@/lib/supabase/server"
 import { createAdminClient } from "@/lib/supabase/admin"
-import { isEmailConfigured, renderQuoteEmail, renderDepositReleasedEmail, saveGmailDraft, sendMail } from "@/lib/email"
-import { getStripe, isStripeConfigured } from "@/lib/stripe"
+import { isEmailConfigured, renderQuoteEmail, saveGmailDraft, sendMail } from "@/lib/email"
 import { generateQuotePdf } from "@/lib/quote-pdf"
 import { getPortalSettings } from "@/app/portal/settings-actions"
+import { isSecured } from "@/lib/quote-status"
+import { captureRentalForQuote } from "@/lib/capture"
 
 export type ItemType = "equipment" | "labor" | "service"
 
@@ -85,6 +86,13 @@ export type QuoteRecord = {
   valid_until: string | null
   sent_at: string | null
   created_at: string
+  // Auth-and-capture tracking
+  authorized_at: string | null
+  authorized_amount: number | null
+  captured_at: string | null
+  captured_amount: number | null
+  deposit_captured_amount: number | null
+  deposit_released_amount: number | null
 }
 
 const TAX_RATE = 0.05 // GST default; owner can override per quote
@@ -571,8 +579,8 @@ export async function sendQuote(
     }
   }
 
-  // Don't downgrade an already-approved/paid quote back to "sent".
-  const keepStatus = ["approved", "paid", "invoiced"].includes(quote.status)
+  // Don't downgrade an already-approved/authorized/captured quote back to "sent".
+  const keepStatus = quote.status === "approved" || isSecured(quote.status)
   await supabase
     .from("quotes")
     .update({ status: keepStatus ? quote.status : "sent", sent_at: new Date().toISOString() })
@@ -605,94 +613,49 @@ export async function deleteQuote(quoteId: string): Promise<MutationResult> {
   return { success: true }
 }
 
+export type CaptureInput = {
+  /** Keep the whole security deposit for damages (capture rental + full deposit). */
+  includeDeposit?: boolean
+  /** Keep a specific dollar amount of the deposit for damages. Overrides includeDeposit. */
+  depositCaptureAmount?: number
+}
+
 /**
- * Return the refundable security deposit to the customer after the event.
- * Issues a Stripe partial refund of the deposit amount against the original
- * payment, leaving only the quoted total collected. Idempotent and safe to
- * click once the invoice has been reviewed and all gear is back.
+ * Complete a rental after the event by capturing the authorized hold. By default
+ * only the rental fee is captured, which automatically releases the security
+ * deposit (no refund, no wasted Stripe fees). If gear was damaged, the owner can
+ * keep some or all of the deposit by passing includeDeposit / depositCaptureAmount.
+ * Idempotent and safe to click once all gear is back.
  */
-export async function refundDeposit(quoteId: string): Promise<MutationResult> {
+export async function captureRental(quoteId: string, input: CaptureInput = {}): Promise<MutationResult> {
   const session = await requireSession()
   if (!session) return { success: false, error: "You are not signed in." }
-  if (!isStripeConfigured()) return { success: false, error: "Payments are not set up yet." }
 
   const { supabase } = session
   const { data: quote, error } = await supabase.from("quotes").select("*").eq("id", quoteId).single()
   if (error || !quote) return { success: false, error: "Quote not found." }
 
-  if (!quote.deposit_required) return { success: false, error: "This quote has no security deposit." }
-  if (!["paid", "invoiced"].includes(quote.status) || !quote.paid_at) {
-    return { success: false, error: "The deposit can only be returned after the quote is paid." }
-  }
-  if (quote.deposit_refunded_at) return { success: true } // already returned — idempotent
-  if (!quote.stripe_payment_intent_id) {
-    return { success: false, error: "No Stripe payment is linked to this quote." }
-  }
+  const depositAmount = quote.deposit_required
+    ? quote.deposit_required_amount != null
+      ? Number(quote.deposit_required_amount)
+      : Number(quote.deposit_total ?? 0)
+    : 0
 
-  const depositAmount =
-    quote.deposit_required_amount != null ? Number(quote.deposit_required_amount) : Number(quote.deposit_total ?? 0)
-  if (!(depositAmount > 0)) return { success: false, error: "There is no deposit amount to refund." }
+  // How much of the deposit to KEEP for damages: an explicit amount wins,
+  // otherwise the full deposit when includeDeposit is set, otherwise nothing.
+  const depositCaptureAmount =
+    input.depositCaptureAmount != null
+      ? Math.max(0, Math.min(Number(input.depositCaptureAmount), depositAmount))
+      : input.includeDeposit
+        ? depositAmount
+        : 0
 
-  const stripe = getStripe()
-  let refundId: string
-  try {
-    const refund = await stripe.refunds.create(
-      {
-        payment_intent: quote.stripe_payment_intent_id,
-        amount: Math.round(depositAmount * 100),
-        metadata: { quote_id: quote.id, quote_number: quote.quote_number, kind: "security_deposit" },
-      },
-      // Idempotency so a double-click can't issue two refunds.
-      { idempotencyKey: `deposit_refund_${quote.id}` },
-    )
-    refundId = refund.id
-  } catch (e) {
-    console.error("[v0] refundDeposit stripe failed:", e instanceof Error ? e.message : e)
-    return { success: false, error: "Stripe could not process the refund. Please try again." }
-  }
-
-  const refundedAt = new Date().toISOString()
-  const { error: updErr } = await supabase
-    .from("quotes")
-    .update({
-      deposit_refunded_at: refundedAt,
-      deposit_refund_amount: depositAmount,
-      stripe_deposit_refund_id: refundId,
-    })
-    .eq("id", quote.id)
-
-  if (updErr) {
-    console.error("[v0] refundDeposit update failed:", updErr.message)
-    return { success: false, error: "Refund issued, but we could not record it. Check Stripe before retrying." }
-  }
-
-  // Best-effort confirmation email to the customer using the owner's editable
-  // template (refund is already issued).
-  try {
-    if (isEmailConfigured()) {
-      const settings = await getPortalSettings()
-      const { subject, html, text } = renderDepositReleasedEmail(
-        {
-          subject: settings.deposit_released_email_subject,
-          body: settings.deposit_released_email_body,
-          signerName: settings.signer_name,
-        },
-        {
-          first_name: firstNameOf(quote.client_name),
-          event_name: quote.event_name || "your event",
-          invoice_number: quote.invoice_number || quote.quote_number,
-          deposit_refund_amount: money(depositAmount),
-          signer_name: settings.signer_name,
-        },
-      )
-      await sendMail({ to: quote.client_email, subject, html, text })
-    }
-  } catch (e) {
-    console.error("[v0] refundDeposit email failed:", e instanceof Error ? e.message : e)
-  }
+  const result = await captureRentalForQuote(supabase, quote, { depositCaptureAmount })
+  if (!result.success) return { success: false, error: result.error }
 
   revalidatePath("/portal/invoices")
   revalidatePath("/portal/dashboard")
+  revalidatePath("/portal/calendar")
   return { success: true }
 }
 

@@ -65,6 +65,7 @@ export default async function PublicQuotePage({
         approved_by_name: quote.approved_by_name,
         approved_at: quote.approved_at,
         paid_at: quote.paid_at,
+        authorized_at: quote.authorized_at,
         notes: quote.notes,
         valid_until: quote.valid_until,
         created_at: quote.created_at,
