@@ -56,7 +56,7 @@ export function ReleaseClient({ token, info }: { token: string; info: ReleaseInf
 
       <div className="space-y-5 px-6 py-6">
         <div>
-          <p className="text-sm text-slate-400">Refundable deposit for</p>
+          <p className="text-sm text-slate-400">Complete rental &amp; release deposit for</p>
           <p className="text-lg font-semibold text-white text-balance">
             {info.eventName || "the event"}
             {info.clientName ? ` · ${info.clientName}` : ""}
@@ -86,24 +86,25 @@ export function ReleaseClient({ token, info }: { token: string; info: ReleaseInf
           <div className="flex items-start gap-3 rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-4 text-sm text-emerald-300">
             <Check className="mt-0.5 h-5 w-5 shrink-0" />
             <div>
-              <p className="font-semibold">Deposit released</p>
+              <p className="font-semibold">Rental completed &amp; deposit released</p>
               <p className="mt-0.5 text-emerald-300/80">
-                {money(amount)} has been refunded to {info.clientName || "the customer"} via Stripe. They&apos;ve been
-                emailed a confirmation. It typically lands within 5–10 business days.
+                The rental has been charged and the {money(amount)} deposit hold on {info.clientName || "the customer"}
+                &apos;s card has been released. They&apos;ve been emailed a paid invoice. The hold typically clears
+                within 5–10 business days.
               </p>
             </div>
           </div>
         ) : info.status === "not_payable" ? (
           <div className="flex items-start gap-3 rounded-xl border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-300">
             <AlertCircle className="mt-0.5 h-5 w-5 shrink-0" />
-            <p>This deposit can&apos;t be released yet — the invoice isn&apos;t marked paid or has no linked payment.</p>
+            <p>This rental can&apos;t be completed yet — the card hold isn&apos;t in place or has no linked payment.</p>
           </div>
         ) : (
           <>
             <p className="text-sm leading-relaxed text-slate-400">
-              Only release this once {info.clientName || "the customer"} has returned all equipment undamaged. The
-              refund is processed instantly through Stripe against their original payment — the quoted total stays
-              collected.
+              Only do this once {info.clientName || "the customer"} has returned all equipment undamaged. The rental is
+              charged and the deposit hold is released automatically through Stripe — you only ever pay fees on the
+              rental you collect.
             </p>
             {error && (
               <div className="flex items-start gap-2 rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-300">
@@ -118,7 +119,7 @@ export function ReleaseClient({ token, info }: { token: string; info: ReleaseInf
               style={{ background: "linear-gradient(to right, #8c52ff, #6b3acc)" }}
             >
               {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <ShieldCheck className="h-4 w-4" />}
-              {loading ? "Releasing…" : `Release ${money(Number(info.depositAmount ?? 0))} deposit`}
+              {loading ? "Completing…" : `Complete rental & release ${money(Number(info.depositAmount ?? 0))} deposit`}
             </button>
           </>
         )}

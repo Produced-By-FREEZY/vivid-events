@@ -15,6 +15,7 @@ import {
   MapPin,
 } from "lucide-react"
 import { approveQuote, createQuoteCheckout, confirmQuotePayment } from "./actions"
+import { AUTHORIZED_STATUS, isCollected, isSecured } from "@/lib/quote-status"
 
 type Item = {
   id: string
@@ -49,6 +50,7 @@ type Quote = {
   approved_by_name: string | null
   approved_at: string | null
   paid_at: string | null
+  authorized_at: string | null
   notes: string | null
   valid_until: string | null
   created_at: string
@@ -96,26 +98,29 @@ export function QuoteView({
   const [confirming, setConfirming] = useState(false)
   const confirmedRef = useRef(false)
 
-  const isPaid = quote.status === "paid" || quote.status === "invoiced"
-  const isApproved = quote.status === "approved" || isPaid
+  // "Confirmed" = booking locked in (card hold placed OR already captured).
+  // "Captured" = the rental has actually been charged after the event.
+  const isConfirmed = isSecured(quote.status)
+  const isCaptured = isCollected(quote.status)
+  const isApproved = quote.status === "approved" || isConfirmed
   const amountDue = quote.deposit_required ? quote.total + quote.deposit_total : quote.total
 
-  // On return from Stripe, verify + convert to invoice.
+  // On return from Stripe, verify that the card hold was placed.
   useEffect(() => {
-    if (!sessionId || isPaid || confirmedRef.current) return
+    if (!sessionId || isConfirmed || confirmedRef.current) return
     confirmedRef.current = true
     setConfirming(true)
     confirmQuotePayment(token, sessionId).then((res) => {
       setConfirming(false)
       if (res.success) {
-        setQuote((q) => ({ ...q, status: "paid" }))
+        setQuote((q) => ({ ...q, status: res.status ?? AUTHORIZED_STATUS, authorized_at: new Date().toISOString() }))
         router.replace(`/quote/${token}`)
         router.refresh()
       } else {
         setError(res.error ?? "We could not verify your payment.")
       }
     })
-  }, [sessionId, isPaid, token, router])
+  }, [sessionId, isConfirmed, token, router])
 
   const handleApprove = () => {
     setError(null)
@@ -124,7 +129,7 @@ export function QuoteView({
       if (res.success) {
         setQuote((q) => ({
           ...q,
-          status: q.status === "paid" ? q.status : "approved",
+          status: isSecured(q.status) ? q.status : "approved",
           approved_by_name: signature.trim(),
           approved_at: new Date().toISOString(),
         }))
@@ -150,10 +155,15 @@ export function QuoteView({
     <main className="min-h-screen bg-slate-100 py-6 md:py-12">
       <div className="mx-auto w-full max-w-3xl px-4">
         {/* Status ribbon */}
-        {isPaid ? (
+        {isCaptured ? (
           <Banner tone="green" icon={<Check className="h-4 w-4" />}>
             Paid on {fmtDate(quote.paid_at)}
             {quote.invoice_number ? ` · Invoice ${quote.invoice_number}` : ""}
+          </Banner>
+        ) : isConfirmed ? (
+          <Banner tone="green" icon={<ShieldCheck className="h-4 w-4" />}>
+            Booking confirmed{quote.invoice_number ? ` · ${quote.invoice_number}` : ""} — your card is authorized and
+            you&apos;ll be charged after your event.
           </Banner>
         ) : isApproved ? (
           <Banner tone="purple" icon={<PenLine className="h-4 w-4" />}>
@@ -184,10 +194,10 @@ export function QuoteView({
             </div>
             <div className="text-right">
               <p className="text-xs uppercase tracking-wide text-slate-400">
-                {isPaid ? "Invoice" : "Quotation"}
+                {isCaptured ? "Invoice" : isConfirmed ? "Booking" : "Quotation"}
               </p>
               <p className="font-mono text-sm font-semibold text-white">
-                {isPaid && quote.invoice_number ? quote.invoice_number : quote.quote_number}
+                {isConfirmed && quote.invoice_number ? quote.invoice_number : quote.quote_number}
               </p>
             </div>
           </div>
@@ -196,14 +206,16 @@ export function QuoteView({
             {/* Greeting */}
             <div className="mb-6">
               <h1 className="text-pretty text-2xl font-bold text-slate-900">
-                {isPaid ? "Thank you, " : "Hi "}
+                {isConfirmed ? "Thank you, " : "Hi "}
                 {quote.client_name.split(" ")[0]}
-                {isPaid ? "!" : ","}
+                {isConfirmed ? "!" : ","}
               </h1>
               <p className="mt-1 text-sm leading-relaxed text-slate-600">
-                {isPaid
-                  ? "Your payment is confirmed and your booking is locked in. A paid invoice has been emailed to you."
-                  : "Here is your quotation for review. When you're happy, add your signature to approve and pay securely below."}
+                {isCaptured
+                  ? "Your payment is complete and your booking is locked in. A paid invoice has been emailed to you."
+                  : isConfirmed
+                    ? "Your booking is confirmed and locked in. Your card is authorized now — we only charge the rental after your event, and the security deposit hold is released automatically."
+                    : "Here is your quotation for review. When you're happy, add your signature to approve and confirm securely below."}
               </p>
             </div>
 
@@ -267,7 +279,7 @@ export function QuoteView({
               <Row label="Subtotal" value={money(quote.subtotal)} />
               <Row label={`Tax (${(quote.tax_rate * 100).toFixed(0)}%)`} value={money(quote.tax_amount)} />
               <div className="flex items-center justify-between border-t border-slate-200 pt-2 text-base font-bold text-slate-900">
-                <span>{isPaid ? "Total" : "Quote total"}</span>
+                <span>{isConfirmed ? "Rental total" : "Quote total"}</span>
                 <span style={{ color: "#8c52ff" }}>{money(quote.total)}</span>
               </div>
               {quote.deposit_required && quote.deposit_total > 0 && (
@@ -275,25 +287,28 @@ export function QuoteView({
                   <Row
                     label="Refundable deposit"
                     value={money(quote.deposit_total)}
-                    hint="Returned after gear is back"
+                    hint={isCaptured ? "Released after event" : "Held, not charged"}
                   />
                   <div className="flex items-center justify-between border-t border-slate-200 pt-2 text-base font-bold">
-                    <span className="text-slate-900">{isPaid ? "Amount paid" : "Due today"}</span>
-                    <span className={isPaid ? "text-emerald-600" : "text-slate-900"}>{money(amountDue)}</span>
+                    <span className="text-slate-900">
+                      {isCaptured ? "Amount paid" : isConfirmed ? "Authorized on card" : "Due today"}
+                    </span>
+                    <span className={isCaptured ? "text-emerald-600" : "text-slate-900"}>{money(amountDue)}</span>
                   </div>
                 </>
               )}
             </div>
 
             {/* Deposit explainer */}
-            {quote.deposit_required && quote.deposit_total > 0 && !isPaid && (
+            {quote.deposit_required && quote.deposit_total > 0 && !isConfirmed && (
               <div className="mt-6 flex gap-3 rounded-xl border border-slate-200 bg-slate-50 p-4">
                 <ShieldCheck className="h-5 w-5 shrink-0 text-[#8c52ff]" />
                 <p className="text-xs leading-relaxed text-slate-600">
                   Because this is an equipment-only rental, a{" "}
                   <span className="font-semibold text-slate-800">refundable security deposit</span> of{" "}
-                  {money(quote.deposit_total)} is collected up front. It&apos;s returned in full within 3 business days
-                  of the equipment being returned undamaged.
+                  {money(quote.deposit_total)} is placed as a temporary hold on your card — it is{" "}
+                  <span className="font-semibold text-slate-800">not charged</span>. The hold is released
+                  automatically once the equipment is returned undamaged.
                 </p>
               </div>
             )}
@@ -321,7 +336,7 @@ export function QuoteView({
             )}
 
             {/* Action area */}
-            {!isPaid && (
+            {!isConfirmed && (
               <div className="mt-8 rounded-2xl border-2 border-dashed border-slate-200 p-5 md:p-6">
                 {!isApproved ? (
                   <>
@@ -369,7 +384,9 @@ export function QuoteView({
                   className="mt-3 flex w-full items-center justify-center gap-2 rounded-lg bg-slate-900 px-4 py-3 text-sm font-semibold text-white transition-opacity hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-40"
                 >
                   {payPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Lock className="h-4 w-4" />}
-                  Pay {money(amountDue)} securely
+                  {quote.deposit_required && quote.deposit_total > 0
+                    ? `Authorize ${money(amountDue)} & confirm`
+                    : `Pay ${money(amountDue)} securely`}
                 </button>
                 {!isApproved && (
                   <p className="mt-2 text-center text-xs text-slate-400">Sign above to enable payment</p>
@@ -382,7 +399,7 @@ export function QuoteView({
             )}
 
             {/* Paid state actions */}
-            {isPaid && quote.stripe_invoice_url && (
+            {isCaptured && quote.stripe_invoice_url && (
               <a
                 href={quote.stripe_invoice_url}
                 target="_blank"

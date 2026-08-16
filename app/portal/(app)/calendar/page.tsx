@@ -6,13 +6,14 @@ export const dynamic = "force-dynamic"
 export default async function CalendarPage() {
   const supabase = await createClient()
 
-  // Only confirmed bookings: paid/invoiced quotes that have an event date.
+  // Confirmed bookings: a card hold is placed (authorized) or the rental has
+  // been captured/paid, and the quote has an event date.
   const { data: quotes } = await supabase
     .from("quotes")
     .select(
-      "id, quote_number, invoice_number, client_name, event_name, event_date, event_start_time, event_end_time, event_address, total, deposit_required, deposit_refunded_at",
+      "id, quote_number, invoice_number, client_name, event_name, event_date, event_start_time, event_end_time, event_address, total, deposit_required, deposit_refunded_at, captured_at, status",
     )
-    .in("status", ["paid", "invoiced"])
+    .in("status", ["authorized", "completed_and_captured", "paid", "invoiced"])
     .not("event_date", "is", null)
     .order("event_date", { ascending: true })
     .order("event_start_time", { ascending: true, nullsFirst: true })
@@ -28,7 +29,8 @@ export default async function CalendarPage() {
     total: Number(q.total),
     invoiceNumber: q.invoice_number,
     quoteNumber: q.quote_number,
-    depositHeld: Boolean(q.deposit_required) && !q.deposit_refunded_at,
+    // The deposit hold is active while authorized and not yet captured/released.
+    depositHeld: Boolean(q.deposit_required) && !q.captured_at && !q.deposit_refunded_at,
   }))
 
   return (

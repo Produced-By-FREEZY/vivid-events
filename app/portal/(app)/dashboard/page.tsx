@@ -8,7 +8,20 @@ const statusStyles: Record<string, string> = {
   draft: "bg-slate-700/60 text-slate-300",
   sent: "bg-[#8c52ff]/20 text-[#c4a7ff]",
   accepted: "bg-emerald-500/15 text-emerald-300",
+  approved: "bg-amber-500/15 text-amber-300",
+  authorized: "bg-sky-500/15 text-sky-300",
+  completed_and_captured: "bg-emerald-500/20 text-emerald-300",
+  paid: "bg-emerald-500/20 text-emerald-300",
+  invoiced: "bg-emerald-500/20 text-emerald-300",
   declined: "bg-red-500/15 text-red-300",
+}
+
+const statusLabel: Record<string, string> = {
+  authorized: "Hold placed",
+  completed_and_captured: "Completed",
+  paid: "Paid",
+  invoiced: "Paid",
+  approved: "Signed",
 }
 
 export default async function DashboardPage() {
@@ -92,7 +105,7 @@ export default async function DashboardPage() {
                   <div className="flex items-center gap-3">
                     <span className="text-sm font-semibold text-white">{money(Number(q.total))}</span>
                     <span className={`rounded-full px-2 py-0.5 text-[11px] font-medium capitalize ${statusStyles[q.status] ?? statusStyles.draft}`}>
-                      {q.status}
+                      {statusLabel[q.status] ?? q.status}
                     </span>
                   </div>
                 </div>

@@ -2,12 +2,9 @@
 
 import { revalidatePath } from "next/cache"
 import { createAdminClient } from "@/lib/supabase/admin"
-import { getStripe, isStripeConfigured } from "@/lib/stripe"
-import { isEmailConfigured, renderDepositReleasedEmail, sendMail } from "@/lib/email"
-import { getPortalSettingsAdmin } from "@/app/portal/settings-actions"
-
-const money = (n: number) => new Intl.NumberFormat("en-CA", { style: "currency", currency: "CAD" }).format(n)
-const firstNameOf = (name: string) => (name ?? "").trim().split(/\s+/)[0] || name
+import { isStripeConfigured } from "@/lib/stripe"
+import { captureRentalForQuote } from "@/lib/capture"
+import { isAuthorized, isCollected } from "@/lib/quote-status"
 
 function depositAmountOf(quote: any): number {
   return quote.deposit_required_amount != null
@@ -45,21 +42,24 @@ export async function getReleaseInfo(token: string): Promise<ReleaseInfo> {
     quoteNumber: quote.quote_number as string,
     depositAmount,
     quotedTotal: Number(quote.total),
-    releasedAt: quote.deposit_refunded_at as string | null,
+    releasedAt: (quote.captured_at ?? quote.deposit_refunded_at) as string | null,
   }
 
-  if (quote.deposit_refunded_at) return { ...base, status: "already_released" }
-  if (!["paid", "invoiced"].includes(quote.status) || !quote.paid_at || !quote.stripe_payment_intent_id) {
-    return { ...base, status: "not_payable" }
+  // Already completed: rental captured (deposit released) or legacy refund done.
+  if (quote.captured_at || quote.deposit_refunded_at) return { ...base, status: "already_released" }
+  // Ready to complete: an active hold (authorized) or a legacy full charge, with a linked PI.
+  if ((isAuthorized(quote.status) || isCollected(quote.status)) && quote.stripe_payment_intent_id) {
+    return { ...base, status: "ready" }
   }
-  return { ...base, status: "ready" }
+  return { ...base, status: "not_payable" }
 }
 
 type ReleaseResult = { success: boolean; error?: string; amount?: number }
 
 /**
- * Release (refund) the refundable security deposit to the customer via Stripe,
- * authenticated only by the secure token from the owner's email. Idempotent.
+ * Complete the rental via the secure token from the owner's email (no login).
+ * Captures only the rental fee, which automatically releases the held security
+ * deposit back to the customer — no refund fees. Idempotent.
  */
 export async function releaseDepositByToken(token: string): Promise<ReleaseResult> {
   if (!token) return { success: false, error: "Invalid link." }
@@ -73,76 +73,14 @@ export async function releaseDepositByToken(token: string): Promise<ReleaseResul
     .maybeSingle()
   if (error || !quote) return { success: false, error: "This release link is not valid." }
 
-  if (!quote.deposit_required) return { success: false, error: "This booking has no security deposit." }
-  if (quote.deposit_refunded_at) return { success: true, amount: Number(quote.deposit_refund_amount ?? 0) } // idempotent
-  if (!["paid", "invoiced"].includes(quote.status) || !quote.paid_at) {
-    return { success: false, error: "The deposit can only be released after payment." }
-  }
-  if (!quote.stripe_payment_intent_id) {
-    return { success: false, error: "No Stripe payment is linked to this booking." }
-  }
-
   const depositAmount = depositAmountOf(quote)
-  if (!(depositAmount > 0)) return { success: false, error: "There is no deposit amount to release." }
 
-  const stripe = getStripe()
-  let refundId: string
-  try {
-    const refund = await stripe.refunds.create(
-      {
-        payment_intent: quote.stripe_payment_intent_id,
-        amount: Math.round(depositAmount * 100),
-        metadata: { quote_id: quote.id, quote_number: quote.quote_number, kind: "security_deposit" },
-      },
-      { idempotencyKey: `deposit_refund_${quote.id}` },
-    )
-    refundId = refund.id
-  } catch (e) {
-    console.error("[v0] releaseDepositByToken stripe failed:", e instanceof Error ? e.message : e)
-    return { success: false, error: "Stripe could not process the release. Please try again." }
-  }
-
-  const refundedAt = new Date().toISOString()
-  const { error: updErr } = await admin
-    .from("quotes")
-    .update({
-      deposit_refunded_at: refundedAt,
-      deposit_refund_amount: depositAmount,
-      stripe_deposit_refund_id: refundId,
-    })
-    .eq("id", quote.id)
-
-  if (updErr) {
-    console.error("[v0] releaseDepositByToken update failed:", updErr.message)
-    return { success: false, error: "Release issued, but we could not record it. Check Stripe before retrying." }
-  }
-
-  // Notify the customer using the owner's editable template (best-effort).
-  try {
-    if (isEmailConfigured()) {
-      const settings = await getPortalSettingsAdmin()
-      const { subject, html, text } = renderDepositReleasedEmail(
-        {
-          subject: settings.deposit_released_email_subject,
-          body: settings.deposit_released_email_body,
-          signerName: settings.signer_name,
-        },
-        {
-          first_name: firstNameOf(quote.client_name),
-          event_name: quote.event_name || "your event",
-          invoice_number: quote.invoice_number || quote.quote_number,
-          deposit_refund_amount: money(depositAmount),
-          signer_name: settings.signer_name,
-        },
-      )
-      await sendMail({ to: quote.client_email, subject, html, text })
-    }
-  } catch (e) {
-    console.error("[v0] releaseDepositByToken email failed:", e instanceof Error ? e.message : e)
-  }
+  // Capture the rental only (depositCaptureAmount: 0 → the whole deposit hold is released).
+  const result = await captureRentalForQuote(admin, quote, { depositCaptureAmount: 0 })
+  if (!result.success) return { success: false, error: result.error }
 
   revalidatePath("/portal/invoices")
   revalidatePath("/portal/dashboard")
   revalidatePath("/portal/calendar")
-  return { success: true, amount: depositAmount }
+  return { success: true, amount: result.released ?? depositAmount }
 }
