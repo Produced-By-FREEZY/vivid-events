@@ -252,6 +252,7 @@ export async function confirmQuotePayment(token: string, sessionId: string): Pro
         itemType: it.item_type,
       }))
 
+      const settings = await getPortalSettingsAdmin()
       const pdf = await generateQuotePdf({
         kind: "invoice",
         number: quote.quote_number,
@@ -273,9 +274,9 @@ export async function confirmQuotePayment(token: string, sessionId: string): Pro
         amountDue: amountPaid,
         paid: true,
         paidAt: new Date(paidAtIso).toLocaleDateString("en-CA"),
+        terms: settings.quote_terms,
       })
 
-      const settings = await getPortalSettingsAdmin()
       const { subject, html, text } = renderPaidEmail(
         {
           subject: settings.paid_email_subject,

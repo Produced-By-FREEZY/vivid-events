@@ -76,12 +76,14 @@ export function QuoteView({
   token,
   sessionId,
   canceled,
+  terms,
   quote: initialQuote,
   items,
 }: {
   token: string
   sessionId: string | null
   canceled: boolean
+  terms?: string | null
   quote: Quote
   items: Item[]
 }) {
@@ -303,6 +305,14 @@ export function QuoteView({
               </div>
             )}
 
+            {/* Terms & conditions */}
+            {terms && terms.trim() && (
+              <div className="mt-8 border-t border-slate-200 pt-6">
+                <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Terms &amp; Conditions</p>
+                <TermsBlock terms={terms} />
+              </div>
+            )}
+
             {/* Error */}
             {error && (
               <div className="mt-6 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
@@ -424,6 +434,37 @@ function Meta({ label, icon, children }: { label: string; icon?: React.ReactNode
         {label}
       </p>
       <p className="mt-1 font-medium text-slate-900">{children}</p>
+    </div>
+  )
+}
+
+/**
+ * Renders the owner's saved quote terms. Lines that look like a numbered clause
+ * heading (e.g. "1. Payment Terms") are emphasised; a leading "Terms &
+ * Conditions" title line is skipped since the section already has a heading.
+ */
+function TermsBlock({ terms }: { terms: string }) {
+  const lines = terms.replace(/\r\n/g, "\n").split("\n")
+  return (
+    <div className="mt-3 space-y-1.5">
+      {lines.map((raw, i) => {
+        const line = raw.trim()
+        if (line === "") return <div key={i} className="h-2" aria-hidden="true" />
+        if (i === 0 && /^(quote\s+)?terms\s*&?\s*conditions$/i.test(line)) return null
+        const isHeading = /^\d+\.\s/.test(line)
+        return (
+          <p
+            key={i}
+            className={
+              isHeading
+                ? "mt-2 text-xs font-semibold text-slate-700"
+                : "text-xs leading-relaxed text-slate-500"
+            }
+          >
+            {line}
+          </p>
+        )
+      })}
     </div>
   )
 }
